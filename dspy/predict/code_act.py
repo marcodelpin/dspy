@@ -131,6 +131,48 @@ class CodeAct(ReAct, ProgramOfThought):
             extract = self._call_extract_with_parse_retry(self.extractor, trajectory, **kwargs)
             return dspy.Prediction(trajectory=trajectory, **extract)
 
+    async def aforward(self, **kwargs):
+        # Async mirror of forward(). CodeAct does NOT set self.react/self.extract, so inheriting
+        # ReAct.aforward raised AttributeError on acall(); provide a CodeAct-specific async path
+        # (dspy-374). Only the LM calls are awaited; code execution stays synchronous because the
+        # PythonInterpreter (a Deno subprocess) is not thread-safe and must run on the calling thread.
+        with self._interpreter_context() as interpreter:
+            # Define the tool functions in the interpreter
+            for tool in self.tools.values():
+                interpreter(inspect.getsource(tool.func))
+
+            trajectory = {}
+            max_iters = kwargs.pop("max_iters", self.max_iters)
+            for idx in range(max_iters):
+                try:
+                    code_data = await self.codeact.acall(trajectory=trajectory, **kwargs)
+                except AdapterParseError as err:
+                    # Same failure class as dspy.ReAct (#8377): record the parse failure as an
+                    # observation and let the model self-correct.
+                    logger.warning(f"Failed to parse the LM response for the next step: {err}")
+                    trajectory[f"observation_{idx}"] = self._format_parse_failure_observation(err)
+                    continue
+
+                code, error = self._parse_code(code_data)
+
+                if error:
+                    trajectory[f"observation_{idx}"] = f"Failed to parse the generated code: {error}"
+                    continue
+
+                trajectory[f"generated_code_{idx}"] = code
+                output, error = self._execute_code(code, interpreter)
+
+                if not error:
+                    trajectory[f"code_output_{idx}"] = output
+                else:
+                    trajectory[f"observation_{idx}"] = f"Failed to execute the generated code: {error}"
+
+                if code_data.finished:
+                    break
+
+            extract = await self._async_call_extract_with_parse_retry(self.extractor, trajectory, **kwargs)
+            return dspy.Prediction(trajectory=trajectory, **extract)
+
     def truncate_trajectory(self, trajectory):
         """Truncate the oldest CodeAct iteration so the trajectory fits the context window.
 

@@ -171,3 +171,30 @@ def test_codeact_truncate_trajectory_single_iteration_raises():
     program = CodeAct("question -> answer", tools=[_simple_tool])
     with pytest.raises(ValueError):
         program.truncate_trajectory({"generated_code_0": "print(1)", "code_output_0": "1"})
+
+
+@pytest.mark.asyncio
+async def test_codeact_async_code_generation():
+    """dspy-374: CodeAct had no aforward, so acall() resolved via MRO to ReAct.aforward, which
+    references self.react (never set by CodeAct.__init__) -> AttributeError. CodeAct now has its own
+    async path mirroring forward()."""
+    lm = DummyLM(
+        [
+            {
+                "reasoning": "Reason_A",
+                "generated_code": "```python\nresult = add(1,1)\nprint(result)\n```",
+                "finished": True,
+            },
+            {"reasoning": "Reason_B", "answer": "2"},
+        ]
+    )
+    dspy.configure(lm=lm)
+    program = CodeAct(BasicQA, tools=[add])
+    res = await program.acall(question="What is 1+1?")
+    assert res.answer == "2"
+    # The async path must build the same trajectory shape as forward(): one iteration with the
+    # generated code and its captured output (exact stdout serialization is an interpreter detail).
+    assert set(res.trajectory.keys()) == {"generated_code_0", "code_output_0"}
+    assert res.trajectory["generated_code_0"] == "result = add(1,1)\nprint(result)"
+    assert "2" in res.trajectory["code_output_0"]
+    assert program.interpreter is None  # no user-provided interpreter: aforward() used a per-call one

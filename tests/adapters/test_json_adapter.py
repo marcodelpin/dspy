@@ -1692,3 +1692,45 @@ Outputs will be a JSON object with the following fields.
 In adhering to this structure, your objective is:\x20
         Answer the question with multiple answers and scores"""
     assert system_message == expected_system_message
+
+
+def test_json_adapter_unwraps_single_key_nested_payload():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/8539:
+    # some models wrap the output fields in a single container key, e.g.
+    # {"json": {...}} or {"json_object": {...}}.
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+
+    for wrapper in ("json", "json_object", "response"):
+        completion = f'{{"{wrapper}": {{"answer": "Paris"}}}}'
+        assert adapter.parse(MySignature, completion) == {"answer": "Paris"}, wrapper
+
+
+def test_json_adapter_does_not_unwrap_when_top_level_has_expected_fields():
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+
+    # A top-level expected field must win, even if its value is a dict.
+    completion = '{"answer": {"nested": "not the answer"}}'
+    parsed = adapter.parse(MySignature, completion)
+    # (str coercion of the dict value; the point is that no unwrap happened)
+    assert parsed["answer"] == "{'nested': 'not the answer'}"
+
+
+def test_json_adapter_still_fails_on_unrelated_single_key_payload():
+    from dspy.utils.exceptions import AdapterParseError
+
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+
+    with pytest.raises(AdapterParseError):
+        adapter.parse(MySignature, '{"something_else": {"foo": "bar"}}')

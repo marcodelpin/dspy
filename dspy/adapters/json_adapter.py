@@ -182,6 +182,15 @@ class JSONAdapter(ChatAdapter):
                 message="LM response cannot be serialized to a JSON object.",
             )
 
+        # Some models wrap the payload in a single container key, e.g.
+        # {"json": {...}} or {"json_object": {...}} (#8539). Unwrap only when the
+        # top level carries none of the expected output fields and the single
+        # nested dict does.
+        if len(fields) == 1 and not any(k in fields for k in signature.output_fields):
+            inner = next(iter(fields.values()))
+            if isinstance(inner, dict) and any(k in inner for k in signature.output_fields):
+                fields = inner
+
         fields = {k: v for k, v in fields.items() if k in signature.output_fields}
 
         # Attempt to cast each value to type signature.output_fields[k].annotation.

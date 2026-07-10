@@ -314,3 +314,25 @@ def test_stream_builder_rejects_incomplete_tool_call_arguments():
 
     with pytest.raises(ValueError, match="tool-call arguments"):
         builder.to_response()
+
+
+def test_video_round_trips_through_openai_chat_messages():
+    """#9899: a video part must emit a `video` content block that keeps `media_type`, rather than
+    collapsing into a bare `file` block that drops it (which forces providers such as Gemini/Vertex
+    to HTTP-fetch the source to infer the MIME type). Ported from upstream PR #9913."""
+    from dspy.clients.openai_format import message_to_openai_chat
+
+    message = User(LMVideoPart(file_id="https://example.com/files/abc", media_type="video/webm"))
+    content = message_to_openai_chat(message)["content"]
+
+    assert content == [
+        {
+            "type": "video",
+            "video": {"media_type": "video/webm", "file_id": "https://example.com/files/abc"},
+        }
+    ]
+
+    round_tripped = LMMessage(role="user", content=content).parts[0]
+    assert isinstance(round_tripped, LMVideoPart)
+    assert round_tripped.media_type == "video/webm"
+    assert round_tripped.file_id == "https://example.com/files/abc"

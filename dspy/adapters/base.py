@@ -423,9 +423,18 @@ class Adapter:
             )
 
         messages = []
-        system_message = self.format_system_message(signature)
+        # The history field is rendered natively as conversation turns (below), never as an
+        # inline field in the user message, so the system message must describe the signature
+        # without it - otherwise the model is told to expect a field it never sees (#9901).
+        system_message = self.format_system_message(
+            signature_without_history if history_field_name else signature
+        )
         messages.append({"role": "system", "content": system_message})
-        messages.extend(self.format_demos(signature, demos))
+        # Demos must not render an inline history field either (a bootstrapped demo can
+        # carry the history key of a history-bearing signature).
+        messages.extend(
+            self.format_demos(signature_without_history if history_field_name else signature, demos)
+        )
         if history_field_name:
             # Conversation history and current input
             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)

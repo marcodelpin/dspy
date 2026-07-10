@@ -172,13 +172,22 @@ def get_dspy_source_code(module):
             except TypeError:
                 continue
             if isinstance(item, Parameter):
-                if hasattr(item, "signature") and item.signature is not None and item.signature.__pydantic_parent_namespace__["signature_name"] + "_sig" not in completed_set:
-                    try:
-                        header.append(inspect.getsource(item.signature))
-                        print(inspect.getsource(item.signature))
-                    except (TypeError, OSError):
-                        header.append(str(item.signature))
-                    completed_set.add(item.signature.__pydantic_parent_namespace__["signature_name"] + "_sig")
+                if hasattr(item, "signature") and item.signature is not None:
+                    # Dynamic signatures can have __pydantic_parent_namespace__ == None (dspy <=3.2.1)
+                    # or lack the "signature_name" key; fall back to the class name so the subscript
+                    # never raises "TypeError: NoneType object is not subscriptable" (#9937).
+                    parent_ns = getattr(item.signature, "__pydantic_parent_namespace__", None)
+                    sig_name = parent_ns.get("signature_name") if isinstance(parent_ns, dict) else None
+                    if sig_name is None:
+                        sig_name = getattr(item.signature, "__name__", None) or "Signature"
+                    sig_key = sig_name + "_sig"
+                    if sig_key not in completed_set:
+                        try:
+                            header.append(inspect.getsource(item.signature))
+                            print(inspect.getsource(item.signature))
+                        except (TypeError, OSError):
+                            header.append(str(item.signature))
+                        completed_set.add(sig_key)
             if isinstance(item, dspy.Module):
                 code = get_dspy_source_code(item).strip()
                 if code not in completed_set:

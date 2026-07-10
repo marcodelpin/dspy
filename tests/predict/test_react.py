@@ -581,9 +581,8 @@ async def test_async_react_recovers_from_adapter_parse_error():
             {"reasoning": "Added the numbers.", "c": "3"},
         ]
     )
-    dspy.configure(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False))
-
-    outputs = await react.acall(a=1, b=2)
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False)):
+        outputs = await react.acall(a=1, b=2)
     traj = outputs.trajectory
 
     assert outputs.c == 3
@@ -703,3 +702,59 @@ def test_codeact_recovers_from_adapter_parse_error():
     assert outputs.answer == "42"
     assert "could not be parsed" in outputs.trajectory["observation_0"]
     assert "could not be parsed" in outputs.trajectory["observation_1"]
+
+
+def test_react_finish_with_extra_args_no_spurious_error():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/9424:
+    # models often place the final structured output values into
+    # next_tool_args when calling finish; the built-in finish tool takes no
+    # arguments, so they must be ignored instead of recording a spurious
+    # "Execution error in finish" observation.
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    react = dspy.ReAct("a, b -> c:int", tools=[add])
+    lm = DummyLM(
+        [
+            {
+                "next_thought": "I know the answer, finishing.",
+                "next_tool_name": "finish",
+                "next_tool_args": {"c": 3, "confidence": 0.95},
+            },
+            {"reasoning": "Added the numbers.", "c": "3"},
+        ]
+    )
+    dspy.configure(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False))
+
+    outputs = react(a=1, b=2)
+    traj = outputs.trajectory
+
+    assert outputs.c == 3
+    assert "Execution error" not in str(traj["observation_0"])
+    assert traj["observation_0"] == "Completed."
+    # The model-supplied args stay visible in the trajectory for extraction.
+    assert traj["tool_args_0"] == {"c": 3, "confidence": 0.95}
+
+
+@pytest.mark.asyncio
+async def test_async_react_finish_with_extra_args_no_spurious_error():
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    react = dspy.ReAct("a, b -> c:int", tools=[add])
+    lm = DummyLM(
+        [
+            {
+                "next_thought": "I know the answer, finishing.",
+                "next_tool_name": "finish",
+                "next_tool_args": {"c": 3},
+            },
+            {"reasoning": "Added the numbers.", "c": "3"},
+        ]
+    )
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False)):
+        outputs = await react.acall(a=1, b=2)
+    traj = outputs.trajectory
+
+    assert outputs.c == 3
+    assert traj["observation_0"] == "Completed."

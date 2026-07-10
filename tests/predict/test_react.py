@@ -758,3 +758,64 @@ async def test_async_react_finish_with_extra_args_no_spurious_error():
 
     assert outputs.c == 3
     assert traj["observation_0"] == "Completed."
+
+
+def test_react_skips_extraction_for_no_output_signature():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/8484:
+    # a no-output signature (`context ->`) is used purely for tool
+    # orchestration, so ReAct should return just the trajectory without the
+    # extra extraction LM call.
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    react = dspy.ReAct("a, b ->", tools=[add])
+    assert not react.signature.output_fields
+
+    # Only the reasoning-step responses are provided; no extraction response.
+    lm = DummyLM(
+        [
+            {"next_thought": "add them", "next_tool_name": "add", "next_tool_args": {"a": 1, "b": 2}},
+            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": {}},
+        ]
+    )
+    dspy.configure(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False))
+
+    outputs = react(a=1, b=2)
+    # trajectory is populated, no extracted output fields.
+    assert outputs.trajectory["tool_name_0"] == "add"
+    assert outputs.trajectory["observation_0"] == 3
+    assert outputs.trajectory["tool_name_1"] == "finish"
+
+
+@pytest.mark.asyncio
+async def test_async_react_skips_extraction_for_no_output_signature():
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    react = dspy.ReAct("a, b ->", tools=[add])
+    lm = DummyLM(
+        [
+            {"next_thought": "add them", "next_tool_name": "add", "next_tool_args": {"a": 1, "b": 2}},
+            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": {}},
+        ]
+    )
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False)):
+        outputs = await react.acall(a=1, b=2)
+    assert outputs.trajectory["observation_0"] == 3
+
+
+def test_react_still_extracts_for_signature_with_outputs():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    react = dspy.ReAct("a, b -> c:int", tools=[add])
+    lm = DummyLM(
+        [
+            {"next_thought": "add", "next_tool_name": "add", "next_tool_args": {"a": 1, "b": 2}},
+            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": {}},
+            {"reasoning": "sum is 3", "c": "3"},
+        ]
+    )
+    dspy.configure(lm=lm, adapter=dspy.ChatAdapter(use_json_adapter_fallback=False))
+    outputs = react(a=1, b=2)
+    assert outputs.c == 3

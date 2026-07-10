@@ -24,7 +24,12 @@ class CodeAct(ReAct, ProgramOfThought):
             signature (Union[str, Type[Signature]]): The signature of the module.
             tools (list[Callable]): The tool callables to be used. CodeAct only accepts functions and not callable objects.
             max_iters (int): The maximum number of iterations to generate the answer.
-            interpreter: PythonInterpreter instance to use. If None, a new one is instantiated.
+            interpreter: PythonInterpreter instance to use. If None (default), a fresh
+                interpreter is created for each forward() call and shut down afterwards,
+                which keeps concurrent calls (e.g. dspy.Evaluate with num_threads > 1)
+                isolated from each other. A user-provided interpreter is reused across
+                calls, its lifecycle belongs to the caller, and it is not safe for
+                concurrent execution (mirrors dspy.RLM semantics).
         Examples:
             ```python
             from dspy.predict import CodeAct
@@ -65,8 +70,7 @@ class CodeAct(ReAct, ProgramOfThought):
         self.tools: dict[str, Tool] = tools
         self.codeact = dspy.Predict(codeact_signature)
         self.extractor = dspy.ChainOfThought(extract_signature)
-        # It will raises exception when dspy cannot find available deno instance by now.
-        self.interpreter = interpreter or PythonInterpreter()
+        self.interpreter = interpreter
 
     def _build_instructions(self, signature, tools):
         instructions = [f"{signature.instructions}\n"] if signature.instructions else []
@@ -88,32 +92,32 @@ class CodeAct(ReAct, ProgramOfThought):
         return instructions
 
     def forward(self, **kwargs):
-        # Define the tool functions in the interpreter
-        for tool in self.tools.values():
-            self.interpreter(inspect.getsource(tool.func))
+        with self._interpreter_context() as interpreter:
+            # Define the tool functions in the interpreter
+            for tool in self.tools.values():
+                interpreter(inspect.getsource(tool.func))
 
-        trajectory = {}
-        max_iters = kwargs.pop("max_iters", self.max_iters)
-        for idx in range(max_iters):
-            code_data = self.codeact(trajectory=trajectory, **kwargs)
-            output = None
-            code, error = self._parse_code(code_data)
+            trajectory = {}
+            max_iters = kwargs.pop("max_iters", self.max_iters)
+            for idx in range(max_iters):
+                code_data = self.codeact(trajectory=trajectory, **kwargs)
+                output = None
+                code, error = self._parse_code(code_data)
 
-            if error:
-                trajectory[f"observation_{idx}"] = f"Failed to parse the generated code: {error}"
-                continue
+                if error:
+                    trajectory[f"observation_{idx}"] = f"Failed to parse the generated code: {error}"
+                    continue
 
-            trajectory[f"generated_code_{idx}"] = code
-            output, error = self._execute_code(code)
+                trajectory[f"generated_code_{idx}"] = code
+                output, error = self._execute_code(code, interpreter)
 
-            if not error:
-                trajectory[f"code_output_{idx}"] = output
-            else:
-                trajectory[f"observation_{idx}"] = f"Failed to execute the generated code: {error}"
+                if not error:
+                    trajectory[f"code_output_{idx}"] = output
+                else:
+                    trajectory[f"observation_{idx}"] = f"Failed to execute the generated code: {error}"
 
-            if code_data.finished:
-                break
+                if code_data.finished:
+                    break
 
-        extract = self._call_with_potential_trajectory_truncation(self.extractor, trajectory, **kwargs)
-        self.interpreter.shutdown()
-        return dspy.Prediction(trajectory=trajectory, **extract)
+            extract = self._call_with_potential_trajectory_truncation(self.extractor, trajectory, **kwargs)
+            return dspy.Prediction(trajectory=trajectory, **extract)

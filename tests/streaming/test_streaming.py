@@ -2143,3 +2143,52 @@ def test_apply_sync_streaming_propagates_producer_exceptions():
         for x in apply_sync_streaming(failing_gen()):
             collected.append(x)
     assert collected == [1, 2]
+
+
+@pytest.mark.anyio
+async def test_stream_listener_reused_across_separate_top_level_calls():
+    """#8425: streamify builds the listeners once; StreamListener.receive sets stream_end=True and,
+    with the default allow_reuse=False, drops every chunk on subsequent top-level calls. The common
+    'build once, call many times' pattern (e.g. a FastAPI handler reusing a factory-built module) must
+    keep streaming on each call, not only the first."""
+
+    class MyProgram(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predict = dspy.Predict("question->answer")
+
+        def forward(self, question, **kwargs):
+            return self.predict(question=question, **kwargs)
+
+    program = dspy.streamify(
+        MyProgram(),
+        stream_listeners=[dspy.streaming.StreamListener(signature_field_name="answer")],
+    )
+
+    contents = ["[[", " ##", " answer", " ##", " ]]\n\n", "To", " get", " to", " the", " other",
+                " side", "!\n\n[[ ##", " completed", " ##", " ]]"]
+
+    async def gpt_4o_mini_stream(*args, **kwargs):
+        for content in contents:
+            yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content=content))])
+
+    stream_generators = [gpt_4o_mini_stream, gpt_4o_mini_stream]
+
+    async def completion_side_effect(*args, **kwargs):
+        return stream_generators.pop(0)()
+
+    async def collect():
+        out = program(question="why did a chicken cross the kitchen?")
+        chunks = []
+        async for value in out:
+            if isinstance(value, dspy.streaming.StreamResponse):
+                chunks.append(value.chunk)
+        return "".join(chunks)
+
+    with mock.patch("litellm.acompletion", side_effect=completion_side_effect):
+        with dspy.context(lm=dspy.LM("openai/gpt-4o-mini", cache=False)):
+            first = await collect()
+            second = await collect()
+
+    assert first == "To get to the other side!"
+    assert second == "To get to the other side!"

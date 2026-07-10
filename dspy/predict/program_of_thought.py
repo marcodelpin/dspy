@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from contextlib import contextmanager
 
 import dspy
 from dspy.primitives.code_interpreter import FinalOutput
@@ -32,7 +33,12 @@ class ProgramOfThought(Module):
         Args:
             signature: The signature of the module.
             max_iters: The maximum number of iterations to retry code generation and execution.
-            interpreter: PythonInterpreter instance to use. If None, a new one is instantiated.
+            interpreter: PythonInterpreter instance to use. If None (default), a fresh
+                interpreter is created for each forward() call and shut down afterwards,
+                which keeps concurrent calls (e.g. dspy.Evaluate with num_threads > 1)
+                isolated from each other. A user-provided interpreter is reused across
+                calls, its lifecycle belongs to the caller, and it is not safe for
+                concurrent execution (mirrors dspy.RLM semantics).
         """
         super().__init__()
         self.signature = signature = ensure_signature(signature)
@@ -59,8 +65,7 @@ class ProgramOfThought(Module):
                 self._generate_instruction("answer"),
             ),
         )
-        # It will raises exception when dspy cannot find available deno instance by now.
-        self.interpreter = interpreter or PythonInterpreter()
+        self.interpreter = interpreter
 
     def _generate_signature(self, mode):
         signature_dict = dict(self.input_fields)
@@ -137,7 +142,7 @@ class ProgramOfThought(Module):
             code_block += "\n" + last_line_match.group(1)
         return code_block, None
 
-    def _execute_code(self, code):
+    def _execute_code(self, code, interpreter):
         """
         Execute the code using PythonInterpreter and return the output or error.
         """
@@ -145,7 +150,7 @@ class ProgramOfThought(Module):
             return None, "Error: Empty code before execution."
 
         try:
-            result = self.interpreter.execute(code)
+            result = interpreter.execute(code)
             if isinstance(result, FinalOutput):
                 result = result.output
             # Since it's more complex structure now, just blindly use json to represents all.
@@ -154,27 +159,49 @@ class ProgramOfThought(Module):
         except Exception as e:
             return None, str(e)
 
+    @contextmanager
+    def _interpreter_context(self):
+        """Yield the interpreter to use for a single forward() call.
+
+        A PythonInterpreter instance is not thread-safe, so unless the user
+        provided their own instance at construction time, every call gets a
+        fresh interpreter (shut down afterwards) to keep concurrent executions
+        isolated (e.g. dspy.Evaluate with num_threads > 1). A user-provided
+        interpreter is reused and its lifecycle belongs to the caller,
+        mirroring dspy.RLM semantics.
+        """
+        if self.interpreter is not None:
+            yield self.interpreter
+        else:
+            interpreter = PythonInterpreter()
+            try:
+                yield interpreter
+            finally:
+                try:
+                    interpreter.shutdown()
+                except Exception:
+                    # Never mask an in-flight exception with a shutdown failure.
+                    logger.warning("Failed to shut down PythonInterpreter cleanly", exc_info=True)
+
     def forward(self, **kwargs):
         input_kwargs = {field_name: kwargs[field_name] for field_name in self.input_fields}
-        code_data = self.code_generate(**input_kwargs)
-        output = None
-        code, error = self._parse_code(code_data)
-        if not error:
-            output, error = self._execute_code(code)
-        hop = 1
-        # Retrying code generation and execution until no error or reach max_iters
-        while error is not None:
-            logger.error(f"Error in code execution: {error}")
-            if hop == self.max_iters:
-                self.interpreter.shutdown()
-                raise RuntimeError(f"Max hops reached. Failed to run ProgramOfThought: {error}")
-            input_kwargs.update({"previous_code": code, "error": error})
-            code_data = self.code_regenerate(**input_kwargs)
+        with self._interpreter_context() as interpreter:
+            code_data = self.code_generate(**input_kwargs)
+            output = None
             code, error = self._parse_code(code_data)
             if not error:
-                output, error = self._execute_code(code)
-            hop += 1
-        input_kwargs.update({"final_generated_code": code, "code_output": output})
-        output_gen_result = self.generate_output(**input_kwargs)
-        self.interpreter.shutdown()
-        return output_gen_result
+                output, error = self._execute_code(code, interpreter)
+            hop = 1
+            # Retrying code generation and execution until no error or reach max_iters
+            while error is not None:
+                logger.error(f"Error in code execution: {error}")
+                if hop == self.max_iters:
+                    raise RuntimeError(f"Max hops reached. Failed to run ProgramOfThought: {error}")
+                input_kwargs.update({"previous_code": code, "error": error})
+                code_data = self.code_regenerate(**input_kwargs)
+                code, error = self._parse_code(code_data)
+                if not error:
+                    output, error = self._execute_code(code, interpreter)
+                hop += 1
+            input_kwargs.update({"final_generated_code": code, "code_output": output})
+            return self.generate_output(**input_kwargs)

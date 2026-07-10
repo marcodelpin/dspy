@@ -30,6 +30,7 @@ from dspy.primitives.repl_types import REPLEntry, REPLHistory, REPLVariable
 from dspy.primitives.sandbox_serializable import SandboxSerializable, build_repl_variable
 from dspy.signatures.signature import ensure_signature
 from dspy.utils.annotation import experimental
+from dspy.utils.exceptions import AdapterParseError
 
 if TYPE_CHECKING:
 
@@ -601,11 +602,17 @@ class RLM(Module):
     ) -> Prediction | REPLHistory:
         """Execute one iteration. Returns Prediction if done, else updated REPLHistory."""
         variables_info = [variable.format() for variable in variables]
-        action = self.generate_action(
-            variables_info=variables_info,
-            repl_history=history,
-            iteration=f"{iteration + 1}/{self.max_iters}",
-        )
+        try:
+            action = self.generate_action(
+                variables_info=variables_info,
+                repl_history=history,
+                iteration=f"{iteration + 1}/{self.max_iters}",
+            )
+        except AdapterParseError as e:
+            # A malformed action-generation turn must not crash the whole run; record it as a
+            # recoverable error and let the next iteration retry (#9573, same contract as the
+            # code-execution recovery path).
+            return history.append(reasoning="", code="", output=f"[Error] {e}")
         if self.verbose:
             logger.info(
                 f"RLM iteration {iteration + 1}/{self.max_iters}\n"
@@ -690,11 +697,16 @@ class RLM(Module):
     ) -> Prediction | REPLHistory:
         """Async version: Execute one iteration."""
         variables_info = [variable.format() for variable in variables]
-        pred = await self.generate_action.acall(
-            variables_info=variables_info,
-            repl_history=history,
-            iteration=f"{iteration + 1}/{self.max_iters}",
-        )
+        try:
+            pred = await self.generate_action.acall(
+                variables_info=variables_info,
+                repl_history=history,
+                iteration=f"{iteration + 1}/{self.max_iters}",
+            )
+        except AdapterParseError as e:
+            # A malformed action-generation turn must not crash the whole run; record it as a
+            # recoverable error and let the next iteration retry (#9573).
+            return history.append(reasoning="", code="", output=f"[Error] {e}")
         if self.verbose:
             logger.info(
                 f"RLM iteration {iteration + 1}/{self.max_iters}\n"

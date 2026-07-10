@@ -639,6 +639,32 @@ class TestRLMToolExceptions:
         assert result.answer == "recovered"
         assert result.trajectory[0]["output"].startswith("[Error]")
 
+    def test_adapter_parse_error_from_generate_action_is_recoverable(self):
+        """#9573: an AdapterParseError from generate_action (a malformed action-generation turn) must
+        not crash the whole RLM run; it should be recorded as a recoverable [Error] and the next
+        iteration retries, like the code-execution recovery path."""
+        from dspy.utils.exceptions import AdapterParseError
+
+        mock = MockInterpreter(responses=[FinalOutput({"answer": "recovered"})])
+        rlm = RLM("query -> answer", max_iters=5, interpreter=mock)
+
+        recover = make_mock_predictor([{"reasoning": "Recover", "code": 'SUBMIT("recovered")'}])
+        calls = {"n": 0}
+
+        def flaky(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise AdapterParseError(
+                    adapter_name="ChatAdapter", signature=rlm.signature, lm_response="garbage"
+                )
+            return recover(**kwargs)
+
+        rlm.generate_action = flaky
+
+        result = rlm.forward(query="test")
+        assert result.answer == "recovered"
+        assert result.trajectory[0]["output"].startswith("[Error]")
+
 
 class TestRLMDynamicSignature:
     """Tests for the dynamically built RLM signatures."""

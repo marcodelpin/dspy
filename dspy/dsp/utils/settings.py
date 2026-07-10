@@ -254,7 +254,14 @@ class Settings:
         try:
             yield
         finally:
-            thread_local_overrides.reset(token)
+            try:
+                thread_local_overrides.reset(token)
+            except ValueError:
+                # aiostream.stream.merge (and similar) can drive this block's __enter__ and __exit__
+                # under different contextvars.Context objects, so Token.reset() raises "was created in
+                # a different Context". Restore the previous overrides directly in the current context
+                # instead of resetting the (unusable cross-context) token (#8797).
+                thread_local_overrides.set(dotdict(original_overrides))
 
     def __repr__(self):
         overrides = thread_local_overrides.get()

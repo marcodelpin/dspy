@@ -38,6 +38,27 @@ def test_dspy_context():
     assert len(dspy.settings.callbacks) == 1
 
 
+def test_dspy_context_survives_cross_context_exit():
+    """aiostream.stream.merge (and similar) drive a `with dspy.context(...)` block's __enter__ and
+    __exit__ under different contextvars.Context objects, which made Token.reset() raise
+    "<Token ...> was created in a different Context" and crash the pipeline. context() must recover
+    from that and keep working (#8797)."""
+    import contextvars
+
+    dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+
+    cm = dspy.context(lm=dspy.LM("openai/gpt-4o-mini"))
+    # __enter__ and __exit__ run under different Contexts, mirroring aiostream.stream.merge scheduling.
+    contextvars.Context().run(cm.__enter__)
+    # With the bug this raises ValueError("<Token ...> was created in a different Context").
+    contextvars.Context().run(lambda: cm.__exit__(None, None, None))
+
+    # The machinery still works afterwards (no leaked/broken token state).
+    with dspy.context(lm=dspy.LM("openai/gpt-4o-mini")):
+        assert dspy.settings.lm.model == "openai/gpt-4o-mini"
+    assert dspy.settings.lm.model == "openai/gpt-4o"
+
+
 def test_dspy_context_parallel():
     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
 

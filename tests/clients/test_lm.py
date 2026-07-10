@@ -1514,6 +1514,64 @@ def test_responses_api_preserves_multi_message_structure():
     assert result["input"][3]["content"] == [{"type": "input_text", "text": "And 3+3?"}]
 
 
+def test_responses_api_flattens_tools_and_tool_choice():
+    """Responses API needs the flat tool shape (name at the top level), not the Chat-Completions
+    nesting under "function". Native function calling via model_type="responses" otherwise fails
+    with 'Missing required parameter: tools[0].name' (#9943)."""
+    from dspy.clients.lm import _convert_chat_request_to_responses_request
+
+    request = {
+        "model": "openai/gpt-5-mini",
+        "messages": [{"role": "user", "content": "What is the weather?"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+    }
+
+    result = _convert_chat_request_to_responses_request(request)
+
+    # tools flattened: name/description/parameters at the top level, no nested "function"
+    assert len(result["tools"]) == 1
+    tool = result["tools"][0]
+    assert tool["type"] == "function"
+    assert tool["name"] == "get_weather"
+    assert tool["description"] == "Get the weather for a city"
+    assert tool["parameters"]["properties"] == {"city": {"type": "string"}}
+    assert "function" not in tool
+
+    # dict tool_choice flattened to the Responses shape
+    assert result["tool_choice"] == {"type": "function", "name": "get_weather"}
+
+
+def test_responses_api_tool_choice_string_passthrough():
+    """String tool_choice values ("auto"/"none"/"required") are already valid for the Responses
+    API and must pass through untouched (#9943)."""
+    from dspy.clients.lm import _convert_chat_request_to_responses_request
+
+    for choice in ("auto", "none", "required"):
+        request = {
+            "model": "openai/gpt-5-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}],
+            "tool_choice": choice,
+        }
+        result = _convert_chat_request_to_responses_request(request)
+        assert result["tool_choice"] == choice
+        assert result["tools"][0] == {"type": "function", "name": "f", "parameters": {}}
+
+
 def test_responses_api_with_image_input():
     api_response = make_response(
         output_blocks=[

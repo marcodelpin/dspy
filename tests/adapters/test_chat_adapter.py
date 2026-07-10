@@ -2826,3 +2826,188 @@ def test_history_field_never_leaks_into_demo_messages():
             if isinstance(message["content"], str):
                 assert "## history ##" not in message["content"], type(adapter).__name__
                 assert "<history>" not in message["content"], type(adapter).__name__
+
+
+def test_chat_adapter_parses_inline_field_markers():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/8901 and
+    # https://github.com/stanfordnlp/dspy/issues/8379: models sometimes emit
+    # compact responses without newlines between fields, so field markers can
+    # appear mid-line. They must still be recognized.
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        next_thought: str = dspy.OutputField()
+        next_tool_name: str = dspy.OutputField()
+        next_tool_args: dict = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## next_thought ## ]]\n"
+        "I should look it up.[[ ## next_tool_name ## ]]\n"
+        "search[[ ## next_tool_args ## ]]\n"
+        '{"query": "weather"}\n'
+        "[[ ## completed ## ]]"
+    )
+    parsed = adapter.parse(ToolSignature, completion)
+    assert parsed == {
+        "next_thought": "I should look it up.",
+        "next_tool_name": "search",
+        "next_tool_args": {"query": "weather"},
+    }
+
+
+def test_chat_adapter_recovers_field_marker_appended_mid_line():
+    # #8901's own example: a real output-field marker appears mid-line
+    # (Current Weather[[ ## answer ## ]]) so the strict line-start pass misses
+    # it; the anywhere-scan fallback recovers it.
+    class TwoFieldSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        note: str = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = "[[ ## note ## ]]\nCurrent Weather[[ ## answer ## ]]\nsunny\n[[ ## completed ## ]]"
+    parsed = adapter.parse(TwoFieldSignature, completion)
+    assert parsed == {"note": "Current Weather", "answer": "sunny"}
+
+
+def test_chat_adapter_ignores_marker_like_text_inside_field_value():
+    # A field value that legitimately mentions a marker string (e.g. a reasoning
+    # field talking about the output format) must NOT be split on it: the strict
+    # line-start pass handles this correctly and the anywhere-scan fallback must
+    # not engage when the strict pass already found every field.
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        next_thought: str = dspy.OutputField()
+        next_tool_name: Literal["search", "finish"] = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## next_thought ## ]]\n"
+        "I forgot the header last time; I will write [[ ## next_tool_name ## ]] correctly now.\n"
+        "[[ ## next_tool_name ## ]]\n"
+        "search\n"
+        "[[ ## completed ## ]]"
+    )
+    parsed = adapter.parse(ToolSignature, completion)
+    assert parsed["next_tool_name"] == "search"
+    assert "[[ ## next_tool_name ## ]]" in parsed["next_thought"]
+
+
+def test_chat_adapter_raises_on_ambiguous_duplicate_marker_rather_than_corrupt():
+    # If an output-field marker appears more than once (a real inline marker plus
+    # a marker-like mention inside another field's value), the completion is
+    # ambiguous. The parser must NOT silently reassign the field; it raises,
+    # matching the pre-existing safe behavior instead of returning a wrong value.
+    class RationaleAnswer(dspy.Signature):
+        question: str = dspy.InputField()
+        rationale: str = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## rationale ## ]]\n"
+        "The format requires [[ ## answer ## ]] next, so I will answer 42.[[ ## answer ## ]]42\n"
+        "[[ ## completed ## ]]"
+    )
+    from dspy.utils.exceptions import AdapterParseError
+
+    with pytest.raises(AdapterParseError):
+        adapter.parse(RationaleAnswer, completion)
+
+
+def test_chat_adapter_inline_recovery_keeps_earlier_field_clean():
+    # When the fallback engages (unique markers), the earlier field's value is
+    # cleanly bounded by the next marker, not polluted with the inline markers.
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        next_thought: str = dspy.OutputField()
+        next_tool_name: Literal["search", "finish"] = dspy.OutputField()
+        next_tool_args: dict = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## next_thought ## ]]\n"
+        "The user wants transactions.[[ ## next_tool_name ## ]]\n"
+        'search[[ ## next_tool_args ## ]]\n{"query": "tx"}\n'
+        "[[ ## completed ## ]]"
+    )
+    parsed = adapter.parse(ToolSignature, completion)
+    assert parsed["next_thought"] == "The user wants transactions."
+    assert parsed["next_tool_name"] == "search"
+    assert parsed["next_tool_args"] == {"query": "tx"}
+
+
+def test_chat_adapter_raises_when_value_mentions_input_field_marker():
+    # A value that mentions an INPUT field's marker text mid-sentence must not
+    # become a spurious section boundary when the fallback engages: the parser
+    # raises (safe) rather than silently truncating the neighboring field.
+    from dspy.utils.exceptions import AdapterParseError
+
+    class ToolSignature(dspy.Signature):
+        context: str = dspy.InputField()
+        next_thought: str = dspy.OutputField()
+        next_tool_name: Literal["search", "finish"] = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    # next_tool_name is inline (forces the fallback); next_thought mentions the
+    # input-field marker [[ ## context ## ]].
+    completion = (
+        "[[ ## next_thought ## ]]\n"
+        "I recall the [[ ## context ## ]] mentioned earlier.[[ ## next_tool_name ## ]]\n"
+        "search\n"
+        "[[ ## completed ## ]]"
+    )
+    with pytest.raises(AdapterParseError):
+        adapter.parse(ToolSignature, completion)
+
+
+def test_chat_adapter_raises_when_value_mentions_completed_marker():
+    from dspy.utils.exceptions import AdapterParseError
+
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        next_thought: str = dspy.OutputField()
+        next_tool_name: Literal["search", "finish"] = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## next_thought ## ]]\n"
+        "Once I see [[ ## completed ## ]] I will stop.[[ ## next_tool_name ## ]]\n"
+        "search\n"
+        "[[ ## completed ## ]]"
+    )
+    with pytest.raises(AdapterParseError):
+        adapter.parse(ToolSignature, completion)
+
+
+def test_chat_adapter_raises_on_completed_mention_before_real_sentinel():
+    # A `completed` mention inside a value BEFORE the real terminating sentinel
+    # must not truncate the field: the parser uses the last sentinel, so the
+    # earlier mention stays in the body and trips the exact-markers gate (raise).
+    from dspy.utils.exceptions import AdapterParseError
+
+    class NoteAnswer(dspy.Signature):
+        question: str = dspy.InputField()
+        note: str = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    completion = (
+        "[[ ## note ## ]]\n"
+        "lead[[ ## answer ## ]]\n"
+        "The value mentions [[ ## completed ## ]] as text and continues.\n"
+        "[[ ## completed ## ]]"
+    )
+    with pytest.raises(AdapterParseError):
+        adapter.parse(NoteAnswer, completion)
+
+
+def test_chat_adapter_strips_completed_sentinel_glued_to_value():
+    # A compact response can append the completed sentinel to the last value
+    # line without a newline; it must not leak into the parsed value.
+    class QASignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    assert adapter.parse(QASignature, "[[ ## answer ## ]]foo[[ ## completed ## ]]") == {"answer": "foo"}

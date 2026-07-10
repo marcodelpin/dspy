@@ -215,40 +215,104 @@ class ChatAdapter(Adapter):
         assistant_message_content += "\n\n[[ ## completed ## ]]\n"
         return assistant_message_content
 
-    def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
-        sections = [(None, [])]
+    def _parse_sections_line_start(self, completion: str) -> list[tuple[str | None, str]]:
+        """Split the completion into (header, value) sections at line-start markers.
 
+        Precise: a marker is only recognized as a field boundary when it starts
+        its own (stripped) line, so marker-like text inside a field's own value
+        is correctly left alone.
+        """
+        sections: list[tuple[str | None, list[str]]] = [(None, [])]
         for line in completion.splitlines():
             match = field_header_pattern.match(line.strip())
             if match:
-                # If the header pattern is found, split the rest of the line as content
                 header = match.group(1)
                 remaining_content = line[match.end() :].strip()
                 sections.append((header, [remaining_content] if remaining_content else []))
             else:
                 sections[-1][1].append(line)
+        return [(k, "\n".join(v).strip()) for k, v in sections]
 
-        sections = [(k, "\n".join(v).strip()) for k, v in sections]
+    def _parse_sections_anywhere(self, completion: str) -> list[tuple[str | None, str]]:
+        """Split the completion at markers wherever they occur, even mid-line.
 
+        Fallback for compact responses that omit newlines between fields (#8901,
+        #8379). Riskier than the line-start pass because it can split on a
+        marker-like substring inside a value, so it is only used when the
+        line-start pass leaves an output field unfilled.
+        """
+        matches = list(field_header_pattern.finditer(completion))
+        sections: list[tuple[str | None, str]] = []
+        for i, match in enumerate(matches):
+            content_start = match.end()
+            content_end = matches[i + 1].start() if i + 1 < len(matches) else len(completion)
+            sections.append((match.group(1), completion[content_start:content_end].strip()))
+        return sections
+
+    def _build_fields(self, signature, completion, sections):
+        """Build output fields from parsed sections. Returns (fields, error_or_None)."""
         fields = {}
         for k, v in sections:
             if (k not in fields) and (k in signature.output_fields):
                 try:
                     fields[k] = parse_value(v, signature.output_fields[k].annotation)
                 except Exception as e:
-                    raise AdapterParseError(
+                    return fields, AdapterParseError(
                         adapter_name="ChatAdapter",
                         signature=signature,
                         lm_response=completion,
                         message=f"Failed to parse field {k} with value {v} from the LM response. Error message: {e}",
                     )
+        return fields, None
+
+    def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+        # The `completed` sentinel marks the end of the output section and is
+        # never part of a field value. Drop a clean trailing sentinel (only
+        # whitespace after it) up front so it is not glued onto the last field's
+        # value in a compact response. A `completed` that appears earlier (inside
+        # a value) is deliberately left in place so it trips the fallback gate.
+        sentinel = "[[ ## completed ## ]]"
+        sentinel_at = completion.rfind(sentinel)
+        if sentinel_at != -1 and not completion[sentinel_at + len(sentinel) :].strip():
+            completion = completion[:sentinel_at]
+
+        # Prefer strict line-start parsing: it is precise and correctly ignores
+        # marker-like text a field may emit in its own value.
+        fields, error = self._build_fields(signature, completion, self._parse_sections_line_start(completion))
+        if error is not None:
+            raise error
+        if fields.keys() == signature.output_fields.keys():
+            return fields
+
+        missing_fields_error = AdapterParseError(
+            adapter_name="ChatAdapter",
+            signature=signature,
+            lm_response=completion,
+            parsed_result=fields,
+        )
+
+        # The strict pass left an output field unfilled. Some models emit
+        # compact responses without newlines between fields, so a marker can
+        # appear mid-line and be missed above (#8901, #8379). Rescanning the
+        # whole completion is only safe when every marker is an unambiguous
+        # structural boundary: the markers must be EXACTLY the output fields,
+        # each once. Any other marker (a mention of an input-field name, a stray
+        # `completed`, or a duplicate output marker) inside a value would create
+        # a spurious boundary that silently truncates or reassigns a field, so
+        # we keep the safe behavior and raise instead (matching the pre-existing
+        # parser).
+        # NOTE: a single mid-value mention of a genuinely-omitted output field
+        # is still indistinguishable from a real inline marker; that rare,
+        # already-malformed case is accepted as a limitation.
+        marker_names = [match.group(1) for match in field_header_pattern.finditer(completion)]
+        if sorted(marker_names) != sorted(signature.output_fields):
+            raise missing_fields_error
+
+        fields, error = self._build_fields(signature, completion, self._parse_sections_anywhere(completion))
+        if error is not None:
+            raise error
         if fields.keys() != signature.output_fields.keys():
-            raise AdapterParseError(
-                adapter_name="ChatAdapter",
-                signature=signature,
-                lm_response=completion,
-                parsed_result=fields,
-            )
+            raise missing_fields_error
 
         return fields
 

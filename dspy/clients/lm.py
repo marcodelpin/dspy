@@ -658,6 +658,27 @@ def _convert_chat_request_to_responses_request(request: dict[str, Any]):
         text = request.pop("text", {})
         request["text"] = {**text, "format": response_format}
 
+    # Flatten `tools` from the Chat Completions nesting to the flat Responses shape. Chat nests the
+    # function under a "function" key ({"type": "function", "function": {"name", "parameters", ...}});
+    # the Responses API expects name/description/parameters at the top level ({"type": "function",
+    # "name", ...}). Without this, native function calling via model_type="responses" fails with
+    # "Missing required parameter: tools[0].name" (#9943).
+    if isinstance(request.get("tools"), list):
+        request["tools"] = [
+            {"type": "function", **tool["function"]}
+            if isinstance(tool, dict) and tool.get("type") == "function" and isinstance(tool.get("function"), dict)
+            else tool
+            for tool in request["tools"]
+        ]
+
+    # Flatten a dict `tool_choice` to the Responses shape ({"type": "function", "name": ...}). String
+    # values ("auto"/"none"/"required") are already valid for the Responses API and pass through.
+    tool_choice = request.get("tool_choice")
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function" and isinstance(
+        tool_choice.get("function"), dict
+    ):
+        request["tool_choice"] = {"type": "function", "name": tool_choice["function"].get("name")}
+
     return request
 
 

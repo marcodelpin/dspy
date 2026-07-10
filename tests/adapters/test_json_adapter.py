@@ -1734,3 +1734,32 @@ def test_json_adapter_still_fails_on_unrelated_single_key_payload():
 
     with pytest.raises(AdapterParseError):
         adapter.parse(MySignature, '{"something_else": {"foo": "bar"}}')
+
+
+def test_json_adapter_fallback_handles_unbalanced_brace_in_string():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/8759:
+    # when the top-level parse isn't an object (prose or a stray list precedes
+    # the JSON), the fallback extraction must not be thrown off by an
+    # unbalanced brace inside a string value (e.g. a code snippet).
+    class MySignature(dspy.Signature):
+        q: str = dspy.InputField()
+        code: str = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+
+    # A stray list precedes the object -> json_repair returns the list ->
+    # fallback extraction fires; the object's `code` value contains a "{".
+    completion = '[1, 2] then {"code": "if (x) {", "answer": "ok"}'
+    parsed = adapter.parse(MySignature, completion)
+    assert parsed == {"code": "if (x) {", "answer": "ok"}
+
+
+def test_json_adapter_fallback_extracts_object_after_prose():
+    class MySignature(dspy.Signature):
+        q: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+    completion = 'Sure! Here is the answer:\n[note]\n{"answer": "42"}'
+    assert adapter.parse(MySignature, completion) == {"answer": "42"}

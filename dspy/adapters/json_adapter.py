@@ -4,7 +4,6 @@ from typing import Any, get_origin
 
 import json_repair
 import pydantic
-import regex
 from pydantic.fields import FieldInfo
 
 from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
@@ -168,11 +167,16 @@ class JSONAdapter(ChatAdapter):
         fields = json_repair.loads(completion)
 
         if not isinstance(fields, dict):
-            pattern = r"\{(?:[^{}]|(?R))*\}"
-            match = regex.search(pattern, completion, regex.DOTALL)
-            if match:
-                completion = match.group(0)
-                fields = json_repair.loads(completion)
+            # The top-level parse wasn't an object (e.g. prose or a stray list
+            # precedes the JSON). Slice from the first "{" to the last "}" and
+            # let json_repair handle it. A brace-balancing regex is unsafe here:
+            # it does not understand JSON string literals, so an unbalanced brace
+            # inside a string value (e.g. "if (x) {") throws off the balance and
+            # captures the wrong span (#8759).
+            start = completion.find("{")
+            end = completion.rfind("}")
+            if start != -1 and end > start:
+                fields = json_repair.loads(completion[start : end + 1])
 
         if not isinstance(fields, dict):
             raise AdapterParseError(

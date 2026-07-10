@@ -28,7 +28,7 @@ def get_limiter():
     return _limiter
 
 
-def asyncify(program: "Module") -> Callable[[Any, Any], Awaitable[Any]]:
+def asyncify(program: "Module") -> Callable[..., Awaitable[Any]]:
     """
     Wraps a DSPy program so that it can be called asynchronously. This is useful for running a
     program in parallel with another task (e.g., another DSPy program).

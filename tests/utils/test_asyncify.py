@@ -50,3 +50,20 @@ async def test_asyncify():
     await verify_asyncify(4, 10)
     await verify_asyncify(8, 15)
     await verify_asyncify(8, 30)
+
+
+def test_asyncify_return_annotation_accepts_any_args():
+    """#9058: asyncify's returned async_program takes (*args, **kwargs), but the return annotation
+    declared Callable[[Any, Any], Awaitable[Any]] (exactly 2 positional params), so Pyright flagged
+    reportCallIssue at any call site with a different arg count. The annotation must accept any
+    signature."""
+    import typing
+
+    from dspy.utils.asyncify import asyncify
+
+    # Read the raw return annotation (get_type_hints would fail resolving the TYPE_CHECKING-only
+    # "Module" forward reference).
+    return_annotation = asyncify.__annotations__["return"]
+    # Callable[..., Awaitable[Any]] -> get_args() == (Ellipsis, Awaitable[Any]); the over-narrow
+    # Callable[[Any, Any], ...] would instead have a list of param types as args[0].
+    assert typing.get_args(return_annotation)[0] is Ellipsis

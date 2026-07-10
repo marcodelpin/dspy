@@ -179,11 +179,16 @@ def parse_value(value, annotation):
         # Handle union annotations, e.g., `str | None`, `Optional[str]`, `Union[str, int, None]`, etc.
         return TypeAdapter(annotation).validate_python(value)
 
-    candidate = json_repair.loads(value)  # json_repair.loads returns "" on failure.
-    if candidate == "" and value != "":
-        try:
-            candidate = ast.literal_eval(value)
-        except (ValueError, SyntaxError):
+    # ChatAdapter instructs the LM to emit Python-literal syntax (e.g. a
+    # dict[str, Any] with None/True/False), so try ast.literal_eval first: it
+    # preserves those literals, whereas json_repair coerces a bare None to the
+    # string "None" (#8820). Fall back to json_repair for real JSON (lowercase
+    # null/true/false) and to repair malformed output.
+    try:
+        candidate = ast.literal_eval(value)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        candidate = json_repair.loads(value)  # json_repair.loads returns "" on failure.
+        if candidate == "" and value != "":
             candidate = value
 
     try:

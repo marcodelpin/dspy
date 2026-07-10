@@ -1888,14 +1888,17 @@ def _audio_dict_to_part(audio: dict[str, Any]) -> LMAudioPart:
 
 
 def _binary_dict_to_part(file: dict[str, Any]) -> LMBinaryPart:
+    # Keys consumed by typed fields below; any others (format, detail, video_metadata, ...) are
+    # preserved in metadata so they survive the round-trip back to the provider (#9898).
+    extra = {k: v for k, v in file.items() if k not in ("file_data", "data", "file_id", "filename")}
     if file.get("file_data") is not None:
         media_type, data = _split_data_uri(file["file_data"])
-        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"))
+        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"), metadata=extra)
     if file.get("data") is not None:
         media_type, data = _split_data_uri(file["data"])
-        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"))
+        return LMBinaryPart(data=data, media_type=media_type, filename=file.get("filename"), metadata=extra)
     if file.get("file_id") is not None:
-        return LMBinaryPart(file_id=file["file_id"], filename=file.get("filename"))
+        return LMBinaryPart(file_id=file["file_id"], filename=file.get("filename"), metadata=extra)
     raise ValueError("Binary content block requires data, file_data, or file_id.")
 
 

@@ -336,3 +336,22 @@ def test_video_round_trips_through_openai_chat_messages():
     assert isinstance(round_tripped, LMVideoPart)
     assert round_tripped.media_type == "video/webm"
     assert round_tripped.file_id == "https://example.com/files/abc"
+
+
+def test_file_block_preserves_provider_specific_keys_round_trip():
+    """#9898: a `file` content block carrying provider-specific keys (format, detail, video_metadata)
+    must survive message normalization. They were silently dropped by _binary_dict_to_part (only
+    data/file_data/file_id/filename were read) and binary_to_openai (only those were re-emitted)."""
+    from dspy.clients.openai_format import message_to_openai_chat
+
+    block = {
+        "type": "file",
+        "file": {
+            "file_id": "abc123",
+            "format": "video/webm",
+            "detail": "high",
+            "video_metadata": {"fps": 1},
+        },
+    }
+    content = message_to_openai_chat(LMMessage(role="user", content=[block]))["content"]
+    assert content == [block]

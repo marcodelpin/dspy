@@ -200,9 +200,12 @@ class BaseModule:
         path = Path(path)
 
         if save_program:
-            if path.suffix:
+            # Path.suffix treats any dot in the final component as an extension (a directory named
+            # "dspy.2" has suffix ".2"), which wrongly rejected legitimate directory names. Only
+            # reject the real state-file extensions used by save_program=False (#8489).
+            if path.suffix in (".json", ".pkl"):
                 raise ValueError(
-                    f"`path` must point to a directory without a suffix when `save_program=True`, but received: {path}"
+                    f"`path` must point to a directory (not a .json/.pkl file) when `save_program=True`, but received: {path}"
                 )
             if path.exists() and not path.is_dir():
                 raise NotADirectoryError(f"The path '{path}' exists but is not a directory.")

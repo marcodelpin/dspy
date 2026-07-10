@@ -542,3 +542,13 @@ def test_forward_through_call_no_warning(capsys):
     module(x="test")
     captured = capsys.readouterr()
     assert "directly is discouraged" not in captured.err
+
+
+def test_save_program_allows_directory_name_with_dot(tmp_path):
+    """#8489: save(save_program=True) rejected any path whose final component contains a dot, because
+    Path.suffix treats it as an extension (a directory 'dspy.2' has suffix '.2'). A directory name
+    with a dot must be allowed; only real state-file extensions (.json/.pkl) are rejected."""
+    program = dspy.Predict("question -> answer")
+    save_dir = tmp_path / "dspy.2"
+    program.save(save_dir, save_program=True)  # must not raise
+    assert (save_dir / "program.pkl").exists()

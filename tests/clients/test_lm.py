@@ -1778,3 +1778,42 @@ async def test_streaming_passes_headers_correctly():
             mock_acompletion.assert_called_once()
             call_kwargs = mock_acompletion.call_args.kwargs
             assert call_kwargs["headers"]["Authorization"] == "Bearer my-custom-token"
+
+
+@pytest.mark.asyncio
+async def test_streaming_passes_num_retries():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/9459: the
+    # streaming completion path must retry transient failures like every other
+    # completion path.
+    from dspy.clients.lm import _get_stream_completion_fn
+
+    request = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [{"role": "user", "content": "test"}],
+    }
+
+    mock_stream = mock.AsyncMock()
+    mock_stream.send = mock.AsyncMock()
+
+    async def empty_async_generator():
+        return
+        yield  # Make it a generator
+
+    with mock.patch("dspy.settings") as mock_settings:
+        mock_settings.send_stream = mock_stream
+        mock_settings.caller_predict = None
+        mock_settings.track_usage = False
+
+        with mock.patch("litellm.acompletion") as mock_acompletion:
+            mock_acompletion.return_value = empty_async_generator()
+
+            stream_fn = _get_stream_completion_fn(request, {}, sync=False, headers=None, num_retries=7)
+            assert stream_fn is not None
+
+            with mock.patch("litellm.stream_chunk_builder", return_value={}):
+                await stream_fn()
+
+            mock_acompletion.assert_called_once()
+            call_kwargs = mock_acompletion.call_args.kwargs
+            assert call_kwargs["num_retries"] == 7
+            assert call_kwargs["retry_strategy"] == "exponential_backoff_retry"

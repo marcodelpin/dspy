@@ -449,6 +449,7 @@ def _get_stream_completion_fn(
     cache_kwargs: dict[str, Any],
     sync=True,
     headers: dict[str, Any] | None = None,
+    num_retries: int = 0,
 ):
     stream = dspy.settings.send_stream
     caller_predict = dspy.settings.caller_predict
@@ -468,6 +469,9 @@ def _get_stream_completion_fn(
             cache=cache_kwargs,
             stream=True,
             headers=headers,
+            # Streamed calls must retry transient failures like every other path (#9459).
+            num_retries=num_retries,
+            retry_strategy="exponential_backoff_retry",
             **request,
         )
         chunks = []
@@ -496,7 +500,7 @@ def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[st
     request = dict(request)
     request.pop("rollout_id", None)
     headers = _add_dspy_identifier_to_headers(request.pop("headers", None))
-    stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)
+    stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers, num_retries=num_retries)
     if stream_completion is None:
         return _get_litellm().completion(
             cache=cache,
@@ -544,7 +548,7 @@ async def alitellm_completion(request: dict[str, Any], num_retries: int, cache: 
     request = dict(request)
     request.pop("rollout_id", None)
     headers = _add_dspy_identifier_to_headers(request.pop("headers", None))
-    stream_completion = _get_stream_completion_fn(request, cache, sync=False, headers=headers)
+    stream_completion = _get_stream_completion_fn(request, cache, sync=False, headers=headers, num_retries=num_retries)
     if stream_completion is None:
         return await _get_litellm().acompletion(
             cache=cache,

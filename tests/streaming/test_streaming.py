@@ -2223,3 +2223,15 @@ def test_sync_send_to_stream_falls_back_from_plain_worker_thread():
 
     assert not errors, errors
     assert received == ["hello"]
+
+
+def test_stream_listener_accepts_baml_adapter_subclass():
+    """#8629: StreamListener.receive resolved streaming support by exact class-name lookup, so
+    BAMLAdapter (a JSONAdapter subclass) was rejected as 'Unsupported adapter for streaming' even
+    though flush() already handles it via isinstance. Resolve by isinstance instead."""
+    from dspy.adapters.baml_adapter import BAMLAdapter
+
+    listener = dspy.streaming.StreamListener(signature_field_name="answer")
+    chunk = ModelResponseStream(model="x", choices=[StreamingChoices(delta=Delta(content="hi"))])
+    with dspy.context(adapter=BAMLAdapter()):
+        listener.receive(chunk)  # must not raise "Unsupported adapter for streaming"

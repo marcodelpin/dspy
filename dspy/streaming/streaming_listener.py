@@ -130,11 +130,20 @@ class StreamListener:
         return False
 
     def receive(self, chunk: ModelResponseStream):
-        adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
-        if adapter_name not in self.adapter_identifiers:
+        # Resolve by isinstance (mirroring flush()), not exact class name, so adapter subclasses like
+        # BAMLAdapter (a JSONAdapter subclass) map to their supported base instead of being rejected
+        # (#8629).
+        adapter = settings.adapter
+        if isinstance(adapter, JSONAdapter):
+            adapter_name = "JSONAdapter"
+        elif isinstance(adapter, XMLAdapter):
+            adapter_name = "XMLAdapter"
+        elif isinstance(adapter, ChatAdapter) or adapter is None:
+            adapter_name = "ChatAdapter"
+        else:
             raise ValueError(
-                f"Unsupported adapter for streaming: {adapter_name}, please use one of the following adapters: "
-                f"{', '.join([a.__name__ for a in ADAPTER_SUPPORT_STREAMING])}"
+                f"Unsupported adapter for streaming: {adapter.__class__.__name__}, please use one of the "
+                f"following adapters: {', '.join([a.__name__ for a in ADAPTER_SUPPORT_STREAMING])}"
             )
         start_identifier = self.adapter_identifiers[adapter_name]["start_identifier"]
         end_identifier = self.adapter_identifiers[adapter_name]["end_identifier"]

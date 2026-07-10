@@ -380,6 +380,7 @@ def find_predictor_for_stream_listeners(
     unique in the program, this function will raise an error.
     """
     predictors = program.named_predictors()
+    name_to_predictor = dict(predictors)
 
     field_name_to_named_predictor = {}
     for listener in stream_listeners:
@@ -402,6 +403,15 @@ def find_predictor_for_stream_listeners(
     predict_id_to_listener = defaultdict(list)
     for listener in stream_listeners:
         if listener.predict:
+            # If the listener also specified predict_name, re-resolve the predictor against the LIVE
+            # program by name. The passed `predict` reference can be stale (e.g. the internal predictor
+            # was recompiled/altered after the reference was captured), in which case its id() no longer
+            # matches the object that actually runs and stamps chunk.predict_id -> the listener would
+            # silently never fire. Re-binding to the live object keeps the id() lookup correct (#8736).
+            if listener.predict_name is not None:
+                live_predictor = name_to_predictor.get(listener.predict_name)
+                if live_predictor is not None:
+                    listener.predict = live_predictor
             predict_id_to_listener[id(listener.predict)].append(listener)
             continue
         if listener.signature_field_name not in field_name_to_named_predictor:

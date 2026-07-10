@@ -95,3 +95,24 @@ def test_command_is_list_not_string(mock_wait, mock_port, mock_popen, mock_threa
         assert "--model-path" in command
         assert "--port" in command
         assert "--host" in command
+
+
+def test_sft_max_length_kwarg_maps_to_installed_trl():
+    """trl >=0.16 renamed the SFTConfig `max_seq_length` constructor arg to `max_length`. The SFT
+    config builder must map the sequence-length value onto whichever kwarg the installed trl exposes,
+    so training works across trl versions and no longer raises TypeError on trl >=0.16 (#8762)."""
+    from dspy.clients.lm_local import _sft_max_length_kwarg
+
+    # trl >=0.16: SFTConfig exposes `max_length` (no `max_seq_length`)
+    class NewSFTConfig:
+        def __init__(self, output_dir=None, max_length=None, packing=None):
+            pass
+
+    assert _sft_max_length_kwarg(NewSFTConfig, 1024) == {"max_length": 1024}
+
+    # trl <0.16: SFTConfig exposes `max_seq_length`
+    class OldSFTConfig:
+        def __init__(self, output_dir=None, max_seq_length=None, packing=None):
+            pass
+
+    assert _sft_max_length_kwarg(OldSFTConfig, 1024) == {"max_seq_length": 1024}

@@ -2192,3 +2192,34 @@ async def test_stream_listener_reused_across_separate_top_level_calls():
 
     assert first == "To get to the other side!"
     assert second == "To get to the other side!"
+
+
+def test_sync_send_to_stream_falls_back_from_plain_worker_thread():
+    """#9154: dspy.Parallel runs sub-calls on a raw ThreadPoolExecutor thread that AnyIO does not
+    manage, so sync_send_to_stream's anyio.from_thread.run() raised 'can only be run from an AnyIO
+    worker thread' and the status/stream message was silently dropped. It must fall back to a fresh
+    event loop and still deliver the message."""
+    import threading
+
+    from dspy.streaming.messages import sync_send_to_stream
+
+    received = []
+
+    class FakeStream:
+        async def send(self, message):
+            received.append(message)
+
+    errors = []
+
+    def worker():
+        try:
+            sync_send_to_stream(FakeStream(), "hello")
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert not errors, errors
+    assert received == ["hello"]

@@ -46,8 +46,14 @@ def sync_send_to_stream(stream, message):
             future = executor.submit(run_in_new_loop)
             return future.result()
     except RuntimeError:
-        # Not in an event loop, safe to use a new event loop in this thread
-        return anyio.from_thread.run(_send)
+        # Not in an event loop. Prefer sending into the surrounding AnyIO portal (e.g. streamify's
+        # task group), but fall back to a fresh event loop when the caller is a plain worker thread
+        # that AnyIO does not manage (e.g. a dspy.Parallel ThreadPoolExecutor thread), where
+        # anyio.from_thread.run() raises "can only be run from an AnyIO worker thread" (#9154).
+        try:
+            return anyio.from_thread.run(_send)
+        except RuntimeError:
+            return asyncio.run(_send())
 
 
 class StatusMessageProvider:

@@ -38,11 +38,11 @@ def test_compile_invokes_estimate_lm_calls(monkeypatch):
 
     monkeypatch.setattr(MIPROv2, "_estimate_lm_calls", spy)
 
-    class _Stop(Exception):
+    class _StopError(Exception):
         pass
 
     def _stop(*args, **kwargs):
-        raise _Stop()
+        raise _StopError()
 
     # Short-circuit compile right after the estimate call so the test stays fast and deterministic.
     monkeypatch.setattr(MIPROv2, "_bootstrap_fewshot_examples", _stop)
@@ -50,7 +50,7 @@ def test_compile_invokes_estimate_lm_calls(monkeypatch):
     program = dspy.Predict("question -> answer")
     trainset = [dspy.Example(question="q", answer="a").with_inputs("question")] * 3
 
-    with pytest.raises(_Stop):
+    with pytest.raises(_StopError):
         opt.compile(program, trainset=trainset, num_trials=2, valset=trainset, minibatch=False)
 
     assert called.get("yes") is True

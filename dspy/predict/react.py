@@ -139,7 +139,14 @@ class ReAct(Module):
             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
 
             try:
-                trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](**pred.next_tool_args)
+                if pred.next_tool_name == "finish":
+                    # Models often place the final output values into next_tool_args when
+                    # finishing; the built-in finish tool takes no arguments, so ignore them
+                    # instead of recording a spurious execution error (#9424). The args stay
+                    # visible in the trajectory for the extraction step.
+                    trajectory[f"observation_{idx}"] = self.tools["finish"]()
+                else:
+                    trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](**pred.next_tool_args)
             except Exception as err:
                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
 
@@ -168,7 +175,11 @@ class ReAct(Module):
             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
 
             try:
-                trajectory[f"observation_{idx}"] = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
+                if pred.next_tool_name == "finish":
+                    # See forward(): finish takes no arguments, ignore model-supplied ones (#9424).
+                    trajectory[f"observation_{idx}"] = await self.tools["finish"].acall()
+                else:
+                    trajectory[f"observation_{idx}"] = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
             except Exception as err:
                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
 

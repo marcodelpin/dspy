@@ -154,3 +154,23 @@ def test_statistics_tracking_during_optimization():
     ), "Optimizer did not properly populate the latest results statistics"
 
     # Additional detailed checks can be added here to verify the contents of the tracked statistics
+
+
+def test_copro_compile_without_eval_kwargs_defaults_to_empty():
+    """#9080: compile declared eval_kwargs as a required keyword-only argument even though its own
+    docstring says 'optional, dict'. Omitting it must work (default to {}) instead of raising
+    TypeError."""
+    optimizer = COPRO(metric=simple_metric, breadth=2, depth=1, init_temperature=1.4)
+    dspy.configure(
+        lm=DummyLM(
+            [
+                {
+                    "proposed_instruction": "Optimized instruction 1",
+                    "proposed_prefix_for_output_field": "Optimized instruction 2",
+                },
+            ]
+        )
+    )
+    student = SimpleModule("input -> output")
+    optimized_student = optimizer.compile(student, trainset=trainset)
+    assert optimized_student is not student

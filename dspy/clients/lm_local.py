@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import logging
 import random
 import socket
@@ -197,6 +198,17 @@ def create_output_dir(model_name, data_path):
     return output_dir
 
 
+def _sft_max_length_kwarg(sft_config_cls, value):
+    """Map the max-sequence-length value onto whichever kwarg the installed trl SFTConfig exposes.
+
+    trl >=0.16 renamed the SFTConfig constructor arg ``max_seq_length`` to ``max_length`` (#8762).
+    Selecting the name from the class signature keeps training working across trl versions instead of
+    unconditionally passing ``max_seq_length`` (which raises TypeError on trl >=0.16).
+    """
+    param = "max_length" if "max_length" in inspect.signature(sft_config_cls).parameters else "max_seq_length"
+    return {param: value}
+
+
 def train_sft_locally(model_name, train_data, train_kwargs):
     try:
         import torch
@@ -275,7 +287,7 @@ def train_sft_locally(model_name, train_data, train_kwargs):
         lr_scheduler_type="constant",
         save_steps=10_000,
         bf16=train_kwargs["bf16"],
-        max_seq_length=train_kwargs["max_seq_length"],
+        **_sft_max_length_kwarg(SFTConfig, train_kwargs["max_seq_length"]),
         packing=train_kwargs["packing"],
         dataset_kwargs={  # We need to pass dataset_kwargs because we are processing the dataset ourselves
             "add_special_tokens": False,  # Special tokens handled by template

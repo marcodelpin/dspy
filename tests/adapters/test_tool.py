@@ -752,3 +752,19 @@ def test_tool_call_execute_with_local_functions():
             globals().pop("local_add", None)
 
     main()
+
+
+def test_format_as_litellm_function_call_excludes_defaulted_args_from_required():
+    """#9882: format_as_litellm_function_call listed EVERY arg in 'required', ignoring Python
+    defaults. An argument with a default value is optional and must be excluded from 'required'."""
+
+    def search(query: str, top_k: int = 5) -> str:
+        """search docs"""
+        return query
+
+    tool = dspy.Tool(search)
+    params = tool.format_as_litellm_function_call()["function"]["parameters"]
+    assert "query" in params["required"]
+    assert "top_k" not in params["required"]
+    # the defaulted arg is still advertised as a property
+    assert "top_k" in params["properties"]

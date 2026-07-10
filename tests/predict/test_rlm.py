@@ -616,6 +616,29 @@ class TestRLMToolExceptions:
         assert result.answer == "recovered"
         assert result.trajectory[0]["output"].startswith("[Error]")
 
+    def test_strip_code_fences_none_raises_syntax_error(self):
+        """#9632: _strip_code_fences(None) must raise SyntaxError (a recoverable error), not the
+        AttributeError that .strip() raised on None."""
+        with pytest.raises(SyntaxError):
+            _strip_code_fences(None)
+
+    def test_none_code_from_generate_action_is_recoverable(self):
+        """#9632: a degenerate LM turn can return code=None (literal None, not the string 'None');
+        _strip_code_fences called .strip() on it -> AttributeError crashed the whole run. It must be
+        recoverable like a SyntaxError."""
+        mock = MockInterpreter(responses=[
+            FinalOutput({"answer": "recovered"}),
+        ])
+        rlm = RLM("query -> answer", max_iters=5, interpreter=mock)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "None", "code": None},
+            {"reasoning": "Recover", "code": 'SUBMIT("recovered")'},
+        ])
+
+        result = rlm.forward(query="test")
+        assert result.answer == "recovered"
+        assert result.trajectory[0]["output"].startswith("[Error]")
+
 
 class TestRLMDynamicSignature:
     """Tests for the dynamically built RLM signatures."""

@@ -66,8 +66,12 @@ You have max {max_llm_calls} sub-LLM calls. When done, call SUBMIT() with your o
 _PYTHON_FENCE_LANGS = {"python", "py", "python3", "py3", ""}
 
 
-def _strip_code_fences(code: str) -> str:
+def _strip_code_fences(code: str | None) -> str:
     """Extract Python code from markdown fences, or return as-is if no fences."""
+    if code is None:
+        # A degenerate LM turn can leave the code field as literal None; treat it as a recoverable
+        # error (the call sites already catch SyntaxError and record it) instead of crashing (#9632).
+        raise SyntaxError("No code was generated for this step.")
     code = code.strip()
     if "```" not in code:
         return code
@@ -611,7 +615,7 @@ class RLM(Module):
         try:
             code = _strip_code_fences(action.code)
         except SyntaxError as e:
-            code = action.code
+            code = action.code or ""  # action.code may be None on a degenerate turn (#9632)
             result = f"[Error] {e}"
             return self._process_execution_result(action, code, result, history, output_field_names)
         result = self._execute_code(repl, code, input_args)
@@ -700,7 +704,7 @@ class RLM(Module):
         try:
             code = _strip_code_fences(pred.code)
         except SyntaxError as e:
-            code = pred.code
+            code = pred.code or ""  # pred.code may be None on a degenerate turn (#9632)
             result = f"[Error] {e}"
             return self._process_execution_result(pred, code, result, history, output_field_names)
         result = self._execute_code(repl, code, input_args)

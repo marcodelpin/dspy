@@ -690,3 +690,22 @@ def test_enable_read_paths_multiple_files(tmp_path):
         assert contents["test1.txt"] == "Content 1"
         assert contents["test2.txt"] == "Content 2"
         assert contents["test3.txt"] == "Content 3"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(float("inf"), "float('inf')"), (float("-inf"), "float('-inf')"), (float("nan"), "float('nan')")],
+)
+def test_serialize_value_non_finite_floats_are_valid_literals(value, expected):
+    """#9990: str(float('inf'/'-inf'/'nan')) emits bare inf/-inf/nan, which are NOT valid Python
+    literals; injecting `x = inf` raises NameError in the sandbox. Serialization must emit a valid
+    literal expression."""
+    interp = PythonInterpreter()
+    serialized = interp._serialize_value(value)
+    assert serialized == expected
+    # The serialized form must be a valid Python literal expression.
+    evaluated = eval(serialized, {"__builtins__": {"float": float}})
+    if value != value:  # NaN
+        assert evaluated != evaluated
+    else:
+        assert evaluated == value

@@ -228,6 +228,16 @@ def streamify(
         return sync_streamer
 
 
+class _ProducerError:
+    """Wraps an exception raised in the producer thread so it can travel through the queue and be
+    re-raised in the consumer thread instead of being silently swallowed (#9142)."""
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+
 def apply_sync_streaming(async_generator: AsyncGenerator) -> Generator:
     """Convert the async streaming generator to a sync generator."""
     queue = Queue()  # Queue to hold items from the async generator
@@ -240,14 +250,18 @@ def apply_sync_streaming(async_generator: AsyncGenerator) -> Generator:
         """Runs in a background thread to fetch items asynchronously."""
 
         async def runner():
-            try:
-                async for item in async_generator:
-                    queue.put(item)
-            finally:
-                # Signal completion
-                queue.put(stop_sentinel)
+            async for item in async_generator:
+                queue.put(item)
 
-        context.run(asyncio.run, runner())
+        try:
+            context.run(asyncio.run, runner())
+        except BaseException as exc:  # forwarded to the consumer thread below
+            # Without this the exception would die in the background thread and the sync consumer
+            # would silently stop early with no error.
+            queue.put(_ProducerError(exc))
+        finally:
+            # Signal completion (always runs, on success and after forwarding an error).
+            queue.put(stop_sentinel)
 
     # Start the producer in a background thread
     thread = threading.Thread(target=producer, daemon=True)
@@ -258,6 +272,8 @@ def apply_sync_streaming(async_generator: AsyncGenerator) -> Generator:
         item = queue.get()  # Block until an item is available
         if item is stop_sentinel:
             break
+        if isinstance(item, _ProducerError):
+            raise item.exc
         yield item
 
 

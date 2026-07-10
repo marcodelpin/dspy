@@ -2125,3 +2125,21 @@ def test_find_predictor_autodetect_and_explicit_without_name_unchanged():
     mapping2 = find_predictor_for_stream_listeners(program2, [explicit_listener])
     assert id(program2.predict) in mapping2
     assert explicit_listener in mapping2[id(program2.predict)]
+
+
+def test_apply_sync_streaming_propagates_producer_exceptions():
+    """#9142: apply_sync_streaming ran the async generator in a background thread whose exception was
+    swallowed (only the stop sentinel reached the consumer), so the sync consumer ended early with no
+    error. The exception must propagate to the caller, after the items produced before it."""
+    from dspy.streaming.streamify import apply_sync_streaming
+
+    async def failing_gen():
+        yield 1
+        yield 2
+        raise ValueError("boom from async gen")
+
+    collected = []
+    with pytest.raises(ValueError, match="boom from async gen"):
+        for x in apply_sync_streaming(failing_gen()):
+            collected.append(x)
+    assert collected == [1, 2]

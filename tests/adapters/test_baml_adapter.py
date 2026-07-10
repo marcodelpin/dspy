@@ -641,3 +641,24 @@ def test_baml_adapter_multiple_pydantic_input_fields():
     assert '"api1"' in user_message
     assert '"api2"' in user_message
     assert '"endpoints":' in user_message
+
+
+def test_baml_adapter_allows_sibling_fields_reusing_same_model():
+    """#8715: sibling fields reusing the same NON-cyclic nested model must not trip the recursion
+    guard. seen_models was mutated in place (.add) and stayed populated across siblings; it must be
+    path-scoped so only a real cycle raises."""
+
+    class Attribute(pydantic.BaseModel):
+        value: str
+
+    class Event(pydantic.BaseModel):
+        title: Attribute
+        location: Attribute
+
+    class TestSignature(dspy.Signature):
+        email: str = dspy.InputField()
+        output: Event = dspy.OutputField()
+
+    structure = BAMLAdapter().format_field_structure(TestSignature)
+    assert "title" in structure
+    assert "location" in structure

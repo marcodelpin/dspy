@@ -103,8 +103,10 @@ def _build_simplified_schema(
     if pydantic_model in seen_models:
         raise ValueError("BAMLAdapter cannot handle recursive pydantic models, please use a different adapter.")
 
-    # Add `pydantic_model` to `seen_models` with a placeholder value to avoid infinite recursion.
-    seen_models.add(pydantic_model)
+    # Track `pydantic_model` for this recursion PATH only, using a fresh set rather than mutating the
+    # shared one. A real cycle re-enters `seen_models` down the same path and still raises, but sibling
+    # fields reusing the same non-cyclic model no longer trip the guard (#8715).
+    seen_models = seen_models | {pydantic_model}
 
     lines = []
     current_indent = INDENTATION * indent

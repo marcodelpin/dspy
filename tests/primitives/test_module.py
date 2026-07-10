@@ -243,3 +243,101 @@ def test_load_state_is_transactional():
         assert template.a.predict.demos == [], (
             "load_state partially mutated module before failing"
         )
+
+
+def test_get_lm_dedups_equal_config_lms():
+    # Regression test for https://github.com/stanfordnlp/dspy/issues/8469:
+    # loading a saved program yields distinct LM instances that share the
+    # same config; get_lm() must treat them as one rather than raising
+    # "Multiple LMs are being used in the module".
+    import dspy
+
+    class MyModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = dspy.Predict("q -> a")
+            self.b = dspy.Predict("q -> a")
+
+        def forward(self, q):
+            return self.a(q=q)
+
+    module = MyModule()
+    # Two distinct instances, identical config (as after save/load).
+    module.a.lm = dspy.LM("openai/gpt-4.1-mini", temperature=0.0, max_tokens=100)
+    module.b.lm = dspy.LM("openai/gpt-4.1-mini", temperature=0.0, max_tokens=100)
+    assert module.a.lm is not module.b.lm
+
+    lm = module.get_lm()
+    assert lm.model == "openai/gpt-4.1-mini"
+
+
+def test_get_lm_still_raises_on_genuinely_different_lms():
+    import pytest
+
+    import dspy
+
+    class MyModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = dspy.Predict("q -> a")
+            self.b = dspy.Predict("q -> a")
+
+        def forward(self, q):
+            return self.a(q=q)
+
+    module = MyModule()
+    module.a.lm = dspy.LM("openai/gpt-4.1-mini", temperature=0.0)
+    module.b.lm = dspy.LM("openai/gpt-4o", temperature=0.7)
+
+    with pytest.raises(ValueError, match="Multiple LMs"):
+        module.get_lm()
+
+
+def test_get_lm_distinguishes_lms_differing_only_by_api_key():
+    # get_lm must not conflate LMs that share every config field except
+    # credentials/endpoint (#8469 review): those are genuinely different.
+    import pytest
+
+    import dspy
+
+    class MyModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = dspy.Predict("q -> a")
+            self.b = dspy.Predict("q -> a")
+
+        def forward(self, q):
+            return self.a(q=q)
+
+    module = MyModule()
+    module.a.lm = dspy.LM("openai/gpt-4.1-mini", api_key="sk-tenant-A", temperature=0.0)
+    module.b.lm = dspy.LM("openai/gpt-4.1-mini", api_key="sk-tenant-B", temperature=0.0)
+
+    with pytest.raises(ValueError, match="Multiple LMs"):
+        module.get_lm()
+
+    module.b.lm = dspy.LM(
+        "openai/gpt-4.1-mini", api_key="sk-tenant-A", api_base="https://other", temperature=0.0
+    )
+    with pytest.raises(ValueError, match="Multiple LMs"):
+        module.get_lm()
+
+
+def test_get_lm_dedup_is_order_insensitive_for_nested_kwargs():
+    import dspy
+
+    class MyModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = dspy.Predict("q -> a")
+            self.b = dspy.Predict("q -> a")
+
+        def forward(self, q):
+            return self.a(q=q)
+
+    module = MyModule()
+    module.a.lm = dspy.LM("openai/gpt-4.1-mini", temperature=0.0, launch_kwargs={"a": 1, "b": 2})
+    module.b.lm = dspy.LM("openai/gpt-4.1-mini", temperature=0.0, launch_kwargs={"b": 2, "a": 1})
+
+    lm = module.get_lm()
+    assert lm.model == "openai/gpt-4.1-mini"

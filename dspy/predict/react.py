@@ -153,6 +153,12 @@ class ReAct(Module):
             if pred.next_tool_name == "finish":
                 break
 
+        if not self.signature.output_fields:
+            # A no-output signature (e.g. `context ->`) is used purely for tool
+            # orchestration; the caller reads results from the trajectory, so
+            # the extraction LM call is unnecessary (#8484).
+            return dspy.Prediction(trajectory=trajectory)
+
         extract = self._call_extract_with_parse_retry(self.extract, trajectory, **input_args)
         return dspy.Prediction(trajectory=trajectory, **extract)
 
@@ -185,6 +191,10 @@ class ReAct(Module):
 
             if pred.next_tool_name == "finish":
                 break
+
+        if not self.signature.output_fields:
+            # See forward(): skip the extraction LM call for no-output signatures (#8484).
+            return dspy.Prediction(trajectory=trajectory)
 
         extract = await self._async_call_extract_with_parse_retry(self.extract, trajectory, **input_args)
         return dspy.Prediction(trajectory=trajectory, **extract)

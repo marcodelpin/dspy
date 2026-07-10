@@ -552,3 +552,26 @@ def test_save_program_allows_directory_name_with_dot(tmp_path):
     save_dir = tmp_path / "dspy.2"
     program.save(save_dir, save_program=True)  # must not raise
     assert (save_dir / "program.pkl").exists()
+
+
+def test_parallel_inside_module_preserves_per_item_usage():
+    """#9201: when dspy.Parallel runs inside an outer module executed under track_usage, each parallel
+    sub-call inherited the outer track_usage() context's ambient usage tracker, so Module.__call__
+    skipped attaching usage to its own result and per-item get_lm_usage() came back None. Each
+    parallel result must carry its own usage."""
+    from dspy.utils.dummies import DummyLM
+
+    dspy.configure(lm=DummyLM([{"answer": "a"}, {"answer": "b"}]), track_usage=True)
+
+    class Outer(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predict = dspy.Predict("question -> answer")
+            self.parallel = dspy.Parallel(num_threads=1)
+
+        def forward(self, questions):
+            return self.parallel([(self.predict, {"question": q}) for q in questions])
+
+    results = Outer()(questions=["q1", "q2"])
+    for result in results:
+        assert result.get_lm_usage()

@@ -90,21 +90,25 @@ class Parallel:
             result = None
             module, example = pair
 
-            if isinstance(example, Example):
-                if self.access_examples:
-                    result = module(**example.inputs())
-                else:
+            # Establish a fresh usage tracker per sub-call so usage is attached to each result. Without
+            # this the sub-call inherits the outer track_usage() context's ambient tracker, and
+            # Module.__call__ skips attaching usage, silently discarding per-item tokens (#9201).
+            with settings.context(usage_tracker=None):
+                if isinstance(example, Example):
+                    if self.access_examples:
+                        result = module(**example.inputs())
+                    else:
+                        result = module(example)
+                elif isinstance(example, dict):
+                    result = module(**example)
+                elif isinstance(example, list) and module.__class__.__name__ == "Parallel":
                     result = module(example)
-            elif isinstance(example, dict):
-                result = module(**example)
-            elif isinstance(example, list) and module.__class__.__name__ == "Parallel":
-                result = module(example)
-            elif isinstance(example, tuple):
-                result = module(*example)
-            else:
-                raise ValueError(
-                    f"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple"
-                )
+                elif isinstance(example, tuple):
+                    result = module(*example)
+                else:
+                    raise ValueError(
+                        f"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple"
+                    )
             return result
 
         # Execute the processing function over the execution pairs

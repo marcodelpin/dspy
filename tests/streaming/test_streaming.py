@@ -2061,3 +2061,67 @@ async def test_streaming_reasoning_fallback():
                 assert final_prediction.reasoning.content == "Let's think step by step about this question."
                 # Verify Reasoning object is str-like
                 assert str(final_prediction.reasoning) == "Let's think step by step about this question."
+
+
+def test_find_predictor_rebinds_stale_explicit_predict_by_name():
+    """#8736/#8379: a listener passing predict + predict_name must bind to the LIVE predictor
+    in the program even if the passed predict reference is stale (e.g. the internal predict was
+    altered/recompiled after the reference was captured). The stream chunk carries
+    predict_id = id(live_predict); if the listener map is keyed by id(stale_predict) the lookup
+    silently returns [] (defaultdict) and the listener never fires."""
+    from dspy.streaming.streaming_listener import find_predictor_for_stream_listeners
+
+    class MyProgram(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predict = dspy.Predict("question -> answer")
+
+        def forward(self, question):
+            return self.predict(question=question)
+
+    program = MyProgram()
+    stale_predict = program.predict  # reference the user captured
+    program.predict = dspy.Predict("question -> answer")  # internal predict altered/recompiled
+    live_predict = program.predict
+    assert stale_predict is not live_predict
+
+    listener = dspy.streaming.StreamListener(
+        signature_field_name="answer", predict=stale_predict, predict_name="predict"
+    )
+    mapping = find_predictor_for_stream_listeners(program, [listener])
+
+    # The listener must be reachable under the LIVE predict's id (what chunk.predict_id will be).
+    assert id(live_predict) in mapping
+    assert listener in mapping[id(live_predict)]
+    assert listener.predict is live_predict
+
+
+def test_find_predictor_autodetect_and_explicit_without_name_unchanged():
+    """Regression: auto-detect (predict=None) still binds to the live predictor, and an explicit
+    predict WITHOUT predict_name is left untouched (keyed by the passed object's id)."""
+    from dspy.streaming.streaming_listener import find_predictor_for_stream_listeners
+
+    class MyProgram(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predict = dspy.Predict("question -> answer")
+
+        def forward(self, question):
+            return self.predict(question=question)
+
+    # Auto-detect path binds to the live object.
+    program = MyProgram()
+    auto_listener = dspy.streaming.StreamListener(signature_field_name="answer")
+    mapping = find_predictor_for_stream_listeners(program, [auto_listener])
+    assert auto_listener.predict is program.predict
+    assert auto_listener.predict_name == "predict"
+    assert id(program.predict) in mapping
+
+    # Explicit predict without predict_name is keyed by the passed object as-is.
+    program2 = MyProgram()
+    explicit_listener = dspy.streaming.StreamListener(
+        signature_field_name="answer", predict=program2.predict
+    )
+    mapping2 = find_predictor_for_stream_listeners(program2, [explicit_listener])
+    assert id(program2.predict) in mapping2
+    assert explicit_listener in mapping2[id(program2.predict)]

@@ -26,6 +26,16 @@ class ReActV2(Module):
         self.signature = ensure_signature(signature)
         self.max_iters = max_iters
 
+        # The final Prediction is built as Prediction(**final_outputs, history=..., termination_reason=...).
+        # An output field named like one of those explicit kwargs would collide and raise a cryptic
+        # TypeError mid-forward(); reject it clearly at construction instead (#9853).
+        reserved_outputs = {"history", "termination_reason"} & set(self.signature.output_fields)
+        if reserved_outputs:
+            raise ValueError(
+                f"Output field(s) {sorted(reserved_outputs)} are reserved by ReActV2, whose final "
+                "Prediction always carries `history` and `termination_reason`. Please rename them."
+            )
+
         user_tools = [tool if isinstance(tool, Tool) else Tool(tool) for tool in tools]
         self.tools = {tool.name: tool for tool in user_tools}
         if "submit" in self.tools:

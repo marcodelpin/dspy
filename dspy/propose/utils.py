@@ -1,6 +1,9 @@
 import inspect
 import json
 import re
+from typing import get_args
+
+import pydantic
 
 import dspy
 
@@ -143,6 +146,21 @@ def create_example_string(fields, example):
     # Joining all the field strings
     return "\n".join(output)
 
+def _collect_nested_pydantic_models(annotation, found: set) -> None:
+    """Recursively collect USER-defined pydantic BaseModel subclasses referenced by a type annotation
+    (including inside list[...], Optional[...], dict[...], and nested model fields). dspy/pydantic
+    built-in models are skipped -- only user models carry proposer-relevant field definitions (#7934)."""
+    if isinstance(annotation, type) and issubclass(annotation, pydantic.BaseModel):
+        if annotation in found or annotation.__module__.startswith(("dspy", "pydantic")):
+            return
+        found.add(annotation)
+        for field in annotation.model_fields.values():
+            _collect_nested_pydantic_models(field.annotation, found)
+        return
+    for arg in get_args(annotation):
+        _collect_nested_pydantic_models(arg, found)
+
+
 def get_dspy_source_code(module):
     header = []
     base_code = ""
@@ -188,6 +206,22 @@ def get_dspy_source_code(module):
                         except (TypeError, OSError):
                             header.append(str(item.signature))
                         completed_set.add(sig_key)
+
+                        # Also emit the source of any user-defined pydantic models referenced in the
+                        # signature's field annotations, so the proposer sees their field definitions
+                        # and not just the type name (#7934).
+                        nested_models: set = set()
+                        all_fields = {**item.signature.input_fields, **item.signature.output_fields}
+                        for field in all_fields.values():
+                            _collect_nested_pydantic_models(field.annotation, nested_models)
+                        for model in nested_models:
+                            model_key = model.__name__ + "_model"
+                            if model_key not in completed_set:
+                                try:
+                                    header.append(inspect.getsource(model))
+                                except (TypeError, OSError):
+                                    pass
+                                completed_set.add(model_key)
             if isinstance(item, dspy.Module):
                 code = get_dspy_source_code(item).strip()
                 if code not in completed_set:

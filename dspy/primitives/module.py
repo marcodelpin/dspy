@@ -1,4 +1,5 @@
 import inspect
+import json
 import logging
 from typing import Any, TextIO
 
@@ -209,7 +210,29 @@ class Module(BaseModule, metaclass=ProgramMeta):
         """
         all_used_lms = [param.lm for _, param in self.named_predictors()]
 
-        if len(set(all_used_lms)) == 1:
+        if len({id(lm) for lm in all_used_lms}) == 1:
+            return all_used_lms[0]
+
+        # Distinct instances with the same config are equivalent (e.g. after
+        # save/load, which reconstructs a fresh LM per predictor). Compare by a
+        # canonical config fingerprint instead of identity so an unchanged
+        # program does not falsely raise (#8469). dump_state() strips the
+        # endpoint/credentials for security, so add them back into the
+        # fingerprint: LMs that differ only by api_key/api_base are genuinely
+        # different and must still raise.
+        def _fingerprint(lm):
+            try:
+                state = dict(lm.dump_state())
+                kwargs = getattr(lm, "kwargs", None) or {}
+                for key in ("api_key", "api_base"):
+                    state[f"__{key}"] = kwargs.get(key)
+                # sort_keys makes the fingerprint order-insensitive, including
+                # for nested dict-valued kwargs.
+                return json.dumps(state, sort_keys=True, default=repr)
+            except Exception:
+                return id(lm)
+
+        if len({_fingerprint(lm) for lm in all_used_lms}) == 1:
             return all_used_lms[0]
 
         raise ValueError("Multiple LMs are being used in the module. There's no unique LM to return.")

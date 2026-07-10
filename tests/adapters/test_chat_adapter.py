@@ -365,7 +365,7 @@ def test_chat_adapter_format_exact_messages_with_history():
                  "\n"
                  "[[ ## completed ## ]]\n"
                  "In adhering to this structure, your objective is: \n"
-                 "        Given the fields `history`, `question`, produce the fields `answer`."},
+                 "        Given the fields `question`, produce the fields `answer`."},
      {"role": "user", "content": "[[ ## question ## ]]\nWhat is 1+1?"},
      {"role": "assistant", "content": "[[ ## answer ## ]]\n2\n\n[[ ## completed ## ]]\n"},
      {"role": "user", "content": "[[ ## question ## ]]\nWhat is 2+2?"},
@@ -1154,7 +1154,7 @@ def test_chat_adapter_format_exact_messages_and_lm_kwargs_with_native_tool_calli
                              "parameters": {"type": "object",
                                             "properties": {"query": {"type": "string"},
                                                            "k": {"type": "integer", "default": 3}},
-                                            "required": ["query", "k"]}}}]}
+                                            "required": ["query"]}}}]}
     assert lm_kwargs == expected_lm_kwargs
 
 
@@ -1504,7 +1504,7 @@ def test_chat_adapter_format_exact_messages_with_non_native_tool_history():
             "\n"
             "[[ ## completed ## ]]\n"
             "In adhering to this structure, your objective is: \n"
-            "        Given the fields `question`, `history`, `tools`, produce the fields `next_thought`, "
+            "        Given the fields `question`, `tools`, produce the fields `next_thought`, "
             "`tool_calls`.",
         },
         {"role": "user", "content": "[[ ## question ## ]]\nQ1"},
@@ -3011,3 +3011,35 @@ def test_chat_adapter_strips_completed_sentinel_glued_to_value():
 
     adapter = dspy.ChatAdapter()
     assert adapter.parse(QASignature, "[[ ## answer ## ]]foo[[ ## completed ## ]]") == {"answer": "foo"}
+
+
+def test_auto_generated_objective_drops_history_field():
+    # #8260 (completes #9901): when the signature has no custom docstring, the auto-generated
+    # objective sentence lists every input field, including the natively-rendered history field.
+    # The system message must describe the signature WITHOUT history so the objective stops naming a
+    # field the model never sees inline.
+    class HistorySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        history: dspy.History = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    inputs = {"question": "How are you?", "history": dspy.History(messages=[{"question": "Hi", "answer": "Hello"}])}
+    for adapter in (dspy.ChatAdapter(), dspy.JSONAdapter(), dspy.XMLAdapter()):
+        system = adapter.format(HistorySignature, demos=[], inputs=inputs)[0]["content"]
+        assert "`history`" not in system, type(adapter).__name__
+        assert "Given the fields `question`, produce the fields `answer`." in system, type(adapter).__name__
+
+
+def test_explicit_instructions_naming_history_are_preserved():
+    # #8260: only the AUTO-GENERATED default objective is regenerated; user-authored instructions that
+    # deliberately mention history must be kept verbatim.
+    class HistorySignature(dspy.Signature):
+        """Answer using the `history` context when relevant."""
+
+        question: str = dspy.InputField()
+        history: dspy.History = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    inputs = {"question": "How are you?", "history": dspy.History(messages=[{"question": "Hi", "answer": "Hello"}])}
+    system = dspy.ChatAdapter().format(HistorySignature, demos=[], inputs=inputs)[0]["content"]
+    assert "Answer using the `history` context when relevant." in system

@@ -21,7 +21,7 @@ from dspy.clients.openai_format import (
 from dspy.core.types import LMMessage, LMRequest, LMResponse
 from dspy.experimental import Citations
 from dspy.signatures.field import InputField
-from dspy.signatures.signature import Signature
+from dspy.signatures.signature import Signature, _default_instructions
 from dspy.utils.callback import BaseCallback, with_callbacks
 from dspy.utils.exceptions import AdapterParseError
 
@@ -416,6 +416,14 @@ class Adapter:
         if history_field_name:
             # In order to format the conversation history, we need to remove the history field from the signature.
             signature_without_history = signature.delete(history_field_name)
+            # delete() preserves the original instructions verbatim. When those instructions are the
+            # auto-generated default (which names every input field, including the history field),
+            # regenerate them for the reduced signature so the objective sentence stops naming a field
+            # the model never sees inline (#8260, completes #9901). Explicit user instructions are kept.
+            if signature.instructions == _default_instructions(signature):
+                signature_without_history = signature_without_history.with_instructions(
+                    _default_instructions(signature_without_history)
+                )
             conversation_history = self.format_conversation_history(
                 signature_without_history,
                 history_field_name,

@@ -216,6 +216,21 @@ class MIPROv2(Teleprompter):
 
         # Initialize program and evaluator
         program = student.deepcopy()
+
+        # Emit the per-run LM-call estimate (#9849: _estimate_lm_calls was implemented but never called).
+        prompt_model_line, task_model_line = self._estimate_lm_calls(
+            program,
+            num_trials,
+            minibatch,
+            minibatch_size,
+            minibatch_full_eval_steps,
+            valset,
+            program_aware_proposer,
+            num_instruct_candidates,
+        )
+        logger.info(prompt_model_line)
+        logger.info(task_model_line)
+
         evaluate = Evaluate(
             devset=valset,
             metric=self.metric,

@@ -1572,6 +1572,27 @@ def test_responses_api_tool_choice_string_passthrough():
         assert result["tools"][0] == {"type": "function", "name": "f", "parameters": {}}
 
 
+def test_responses_api_process_response_handles_dict_output_items():
+    """With web_search tools, litellm returns some response.output items (e.g. web_search_call) as
+    raw dicts rather than typed objects. _process_response must read the item discriminator safely so
+    it does not crash with AttributeError: 'dict' object has no attribute 'type' (#8958)."""
+    import types
+
+    lm = dspy.LM("openai/gpt-5-mini", model_type="responses")
+
+    message = types.SimpleNamespace(
+        type="message",
+        content=[types.SimpleNamespace(type="output_text", text="the answer")],
+    )
+    web_search_call = {"type": "web_search_call", "id": "ws_1", "status": "completed"}
+    response = types.SimpleNamespace(output=[web_search_call, message])
+
+    result = lm._process_response(response)
+
+    # dict web_search_call item is ignored (unrecognized type), the typed message text is extracted
+    assert result == [{"text": "the answer"}]
+
+
 def test_responses_api_with_image_input():
     api_response = make_response(
         output_blocks=[

@@ -868,7 +868,11 @@ class BaseLM:
         reasoning_contents = []
 
         for output_item in response.output:
-            output_item_type = output_item.type
+            # With web_search (and other built-in tools), litellm returns some response.output items
+            # as raw dicts rather than typed objects. Read the discriminator safely so the loop does
+            # not crash with AttributeError; such items are not message/function_call/reasoning, so
+            # they fall through and are ignored, same as before (#8958).
+            output_item_type = output_item.get("type") if isinstance(output_item, dict) else output_item.type
             if output_item_type == "message":
                 for content_item in output_item.content:
                     text_outputs.append(content_item.text)

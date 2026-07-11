@@ -66,4 +66,18 @@ class KNNFewShot(Teleprompter):
             return compiled_program(**kwargs)
 
         student_copy.forward = types.MethodType(forward_pass, student_copy)
+
+        def _dump_state(_self, *args, **kwargs):
+            # A KNNFewShot-compiled module retrieves demonstrations dynamically per query, so it has no
+            # static predictor state to serialize; a json/pkl state save would silently write an empty,
+            # useless file. Direct the user to save_program=True (cloudpickle), which captures the whole
+            # dynamic module (retriever + trainset + bootstrap args + forward closure) (#1089).
+            raise NotImplementedError(
+                "A KNNFewShot-compiled module selects few-shot demonstrations dynamically per query, so "
+                "it has no static state to serialize. Persist it with `module.save(path, "
+                "save_program=True)` (cloudpickle) and reload with `dspy.load(path, allow_pickle=True)` "
+                "instead of json/pkl state saving."
+            )
+
+        student_copy.dump_state = types.MethodType(_dump_state, student_copy)
         return student_copy

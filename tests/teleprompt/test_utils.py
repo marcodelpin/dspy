@@ -95,3 +95,40 @@ def test_create_n_fewshot_demo_sets_passes_metric_threshold_for_unshuffled():
             assert kwargs["metric_threshold"] == 0.9, (
                 f"metric_threshold={kwargs['metric_threshold']}, expected 0.9"
             )
+
+
+def test_create_n_fewshot_demo_sets_labeled_only_does_not_crash():
+    """Labeled-only optimization (max_bootstrapped_demos=0, max_labeled_demos>0) must not crash in the
+    shuffled few-shot branch. Previously `rng.randint(min_num_samples, max_bootstrapped_demos)` became
+    `randint(1, 0)` and raised ValueError('empty range for randrange() (1, 0)'). Regression test for
+    https://github.com/stanfordnlp/dspy/issues/9938.
+    """
+    student = DummyModule()
+    student.predictor = dspy.Predict("input -> output")
+    trainset = [dspy.Example(input="test", output="test").with_inputs("input")]
+
+    lm = DummyLM([{"output": "test"}])
+    dspy.configure(lm=lm)
+
+    with patch("dspy.teleprompt.utils.BootstrapFewShot") as mock_bootstrap:
+        mock_instance = Mock()
+        mock_instance.compile.return_value = student
+        mock_bootstrap.return_value = mock_instance
+
+        # num_candidate_sets=4 -> seeds -3,-2,-1,0 -> seed=0 hits the shuffled few-shot branch that
+        # previously crashed on randint(1, 0) with max_bootstrapped_demos=0.
+        create_n_fewshot_demo_sets(
+            student=student,
+            num_candidate_sets=4,
+            trainset=trainset,
+            max_labeled_demos=2,
+            max_bootstrapped_demos=0,
+            metric=lambda ex, pred, trace=None: 1.0,
+            teacher_settings={},
+        )
+
+        # Completing without ValueError is the core assertion; the branches must request 0 bootstrapped
+        # demos (the guarded size) rather than sampling from an empty range.
+        assert mock_bootstrap.call_args_list, "BootstrapFewShot was never called"
+        for _, kwargs in mock_bootstrap.call_args_list:
+            assert kwargs.get("max_bootstrapped_demos") == 0

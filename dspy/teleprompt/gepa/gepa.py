@@ -529,6 +529,18 @@ class GEPA(Teleprompter):
 
         rng = random.Random(self.seed)
 
+        warned_missing_feedback = [False]  # log the missing-feedback warning once per compile
+
+        def _warn_missing_feedback(pred_name: str) -> None:
+            if not warned_missing_feedback[0]:
+                logger.warning(
+                    f"The metric returned no feedback (None or empty) for predictor '{pred_name}'. "
+                    "GEPA relies on textual feedback to guide instruction evolution and is falling back "
+                    "to a score-only feedback string. Return dspy.Prediction(score=..., feedback=<text>) "
+                    "from your metric to provide it. This warning is logged once per compile."
+                )
+                warned_missing_feedback[0] = True
+
         def feedback_fn_creator(pred_name: str, predictor) -> "PredictorFeedbackFn":
             def feedback_fn(
                 predictor_output: dict[str, Any],
@@ -546,10 +558,12 @@ class GEPA(Teleprompter):
                     trace_for_pred,
                 )
                 if hasattr(o, "feedback"):
-                    if o["feedback"] is None:
+                    if not o["feedback"]:  # None or empty string
+                        _warn_missing_feedback(pred_name)
                         o["feedback"] = f"This trajectory got a score of {o['score']}."
                     return o
                 else:
+                    _warn_missing_feedback(pred_name)
                     return dict(score=o, feedback=f"This trajectory got a score of {o}.")
 
             return feedback_fn

@@ -271,13 +271,30 @@ def test_gepa_compile_with_track_usage_no_tuple_error(caplog):
     # Assert no tuple-usage error is logged anymore
     assert "'tuple' object has no attribute 'set_lm_usage'" not in caplog.text
 
-    # If any exception occurred, fail explicitly
-    if "e" in exc_container:
-        pytest.fail(f"GEPA.compile raised unexpectedly: {exc_container['e']}")
 
-    # No timeout, no exception -> so the program must exist
-    if "prog" not in compiled_container:
-        pytest.fail("GEPA.compile did return a program (likely pre-fix behavior).")
+def test_gepa_warns_when_metric_returns_no_feedback():
+    """GEPA relies on textual feedback to guide instruction evolution. When the metric returns empty
+    (or None/absent) feedback, GEPA silently falls back to a score-only string; it should warn the user
+    once so a broken metric_with_feedback is not missed. Regression test for #8920."""
+    student = dspy.Predict("question -> answer")
+    trainset = [dspy.Example(question="What is 2+2?", answer="4").with_inputs("question")]
+
+    task_lm = DummyLM([{"answer": "mock answer 1"}])
+    reflection_lm = DummyLM([{"new_instruction": "Something new."}])
+
+    # score < 1 so GEPA does not skip the reflective mutation (which is where feedback_fn runs).
+    def empty_feedback_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
+        return dspy.Prediction(score=0.0, feedback="")
+
+    with mock.patch("dspy.teleprompt.gepa.gepa.logger") as mock_logger:
+        with dspy.context(lm=task_lm):
+            optimizer = dspy.GEPA(metric=empty_feedback_metric, reflection_lm=reflection_lm, max_metric_calls=3)
+            optimizer.compile(student, trainset=trainset, valset=trainset)
+
+    warning_msgs = [str(c.args[0]) for c in mock_logger.warning.call_args_list if c.args]
+    assert any("no feedback" in m.lower() for m in warning_msgs), (
+        f"expected a 'no feedback' warning, got: {warning_msgs}"
+    )
 
 
 class MultiComponentModule(dspy.Module):

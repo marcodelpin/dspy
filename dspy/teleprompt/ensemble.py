@@ -37,4 +37,15 @@ class Ensemble(Teleprompter):
 
                 return outputs
 
+            def dump_state(self, json_mode=True):
+                # named_parameters() skips sub-modules flagged _compiled=True (kept frozen elsewhere),
+                # so the default state dump of an ensemble of already-compiled candidates is empty and
+                # save/load loses every candidate. Serialize each candidate's own state directly so the
+                # round-trip works regardless of the _compiled flag (#775).
+                return {"programs": [program.dump_state(json_mode=json_mode) for program in self.programs]}
+
+            def load_state(self, state, **kwargs):
+                for program, program_state in zip(self.programs, state["programs"], strict=False):
+                    program.load_state(program_state, **kwargs)
+
         return EnsembledProgram()

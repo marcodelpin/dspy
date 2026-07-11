@@ -2,6 +2,7 @@ import pytest
 
 import dspy
 from dspy.teleprompt import Ensemble
+from dspy.utils import DummyLM
 
 
 class MockProgram(dspy.Module):
@@ -57,3 +58,36 @@ def test_ensemble_deterministic_behavior():
         match="TODO: Implement example hashing for deterministic ensemble.",
     ):
         Ensemble(deterministic=True)
+
+
+def test_ensemble_state_round_trips_compiled_candidates():
+    """An ensemble of already-compiled (_compiled=True) candidates must serialize and reload each
+    candidate's state. named_parameters() skips _compiled sub-modules, so the default dump_state
+    returned {} (losing every candidate's demos) and load_state raised KeyError 'programs[0]...'.
+    Regression test for #775."""
+
+    class SimpleProg(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predict_func = dspy.Predict("question -> answer")
+
+    dspy.configure(lm=DummyLM([{"answer": "x"}]))
+
+    prog0 = SimpleProg()
+    prog0.predict_func.demos = [dspy.Example(question="q0", answer="a0")]
+    prog0._compiled = True
+    prog1 = SimpleProg()
+    prog1.predict_func.demos = [dspy.Example(question="q1", answer="a1")]
+    prog1._compiled = True
+
+    ensembled = Ensemble(reduce_fn=None).compile([prog0, prog1])
+
+    state = ensembled.dump_state()
+    assert state != {}, "ensemble of compiled candidates serialized to an empty state"
+
+    # Reload into a fresh ensemble of uncompiled candidates.
+    fresh = Ensemble(reduce_fn=None).compile([SimpleProg(), SimpleProg()])
+    fresh.load_state(state)
+
+    assert fresh.programs[0].predict_func.demos[0]["question"] == "q0"
+    assert fresh.programs[1].predict_func.demos[0]["question"] == "q1"

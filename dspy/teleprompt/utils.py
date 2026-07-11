@@ -390,7 +390,14 @@ def create_n_fewshot_demo_sets(
         else:
             # shuffled few-shot
             rng.shuffle(trainset_copy)
-            size = rng.randint(min_num_samples, max_bootstrapped_demos)
+            # Guard against an empty sampling range: on labeled-only optimization max_bootstrapped_demos
+            # is 0 (with min_num_samples defaulting to 1), so rng.randint(1, 0) raised ValueError. Use 0
+            # bootstrapped demos in that case, and clamp the lower bound so a custom min_num_samples that
+            # exceeds max_bootstrapped_demos does not crash either (#9938).
+            if max_bootstrapped_demos <= 0:
+                size = 0
+            else:
+                size = rng.randint(min(min_num_samples, max_bootstrapped_demos), max_bootstrapped_demos)
 
             teleprompter = BootstrapFewShot(
                 metric=metric,

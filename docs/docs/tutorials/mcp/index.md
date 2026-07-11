@@ -378,7 +378,7 @@ import dspy
 # Create server parameters for stdio connection
 server_params = StdioServerParameters(
     command="python",  # Executable
-    args=["script_tmp/mcp_server.py"],  # Optional command line arguments
+    args=["path_to_your_working_directory/mcp_server.py"],  # Optional command line arguments
     env=None,  # Optional environment variables
 )
 

@@ -209,13 +209,21 @@ class ParallelExecutor:
                                     st = start_time_map.get(sid, None)
                                 if st and (now - st) >= self.timeout:
                                     resubmitted.add(f)
-                                    nf = executor.submit(
-                                        worker,
-                                        parent_overrides,
-                                        submission_counter,
-                                        idx,
-                                        item,
-                                    )
+                                    try:
+                                        nf = executor.submit(
+                                            worker,
+                                            parent_overrides,
+                                            submission_counter,
+                                            idx,
+                                            item,
+                                        )
+                                    except RuntimeError:
+                                        # The pool may already be shutting down (cancellation, or a race
+                                        # with the finally-block shutdown on long runs). Resubmission is a
+                                        # best-effort straggler mitigation, so skip it rather than letting
+                                        # "cannot schedule new futures after shutdown" crash the whole run;
+                                        # the original future is still tracked in futures_set (#9574).
+                                        continue
                                     futures_map[nf] = (submission_counter, idx, item)
                                     futures_set.add(nf)
                                     submission_counter += 1

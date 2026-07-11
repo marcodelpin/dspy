@@ -166,3 +166,46 @@ def test_sequential_compare_results():
     results = executor.execute(task, data)
 
     assert results == [(1, False), (2, False), (3, True), (4, True), (5, True)]
+
+
+def test_straggler_resubmit_after_shutdown_does_not_crash(monkeypatch):
+    """On long runs a straggler resubmit can race the pool shutdown and raise
+    'cannot schedule new futures after shutdown'. That RuntimeError must not escape and crash the whole
+    run -- the resubmit is best-effort, and the original future is still tracked. Regression for #9574."""
+    import concurrent.futures
+
+    real_submit = concurrent.futures.ThreadPoolExecutor.submit
+    calls = {"n": 0}
+    release = threading.Event()
+
+    def flaky_submit(self, fn, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the straggler resubmit (2 initial submits + this one)
+            raise RuntimeError("cannot schedule new futures after shutdown")
+        return real_submit(self, fn, *args, **kwargs)
+
+    monkeypatch.setattr(concurrent.futures.ThreadPoolExecutor, "submit", flaky_submit)
+
+    def task(item):
+        if item == 0:
+            assert release.wait(timeout=3.0), "item 0 was never released"
+            return 0
+        time.sleep(0.15)  # exceed the straggler timeout so item 0 is flagged when item 1 completes
+        return 10
+
+    # release item 0 shortly after the resubmit has been attempted so the run can finish
+    timer = threading.Timer(0.6, release.set)
+    timer.start()
+    try:
+        executor = ParallelExecutor(
+            num_threads=2, timeout=0.05, straggler_limit=1, disable_progress_bar=True
+        )
+        results = executor.execute(task, [0, 1])
+    finally:
+        release.set()
+        timer.cancel()
+
+    # The resubmit was attempted (3rd submit) and its RuntimeError was swallowed; execute completed.
+    assert calls["n"] >= 3
+    assert results[0] == 0
+    assert results[1] == 10

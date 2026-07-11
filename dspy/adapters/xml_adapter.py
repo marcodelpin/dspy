@@ -8,6 +8,57 @@ from dspy.adapters.utils import format_field_value, translate_field_type
 from dspy.signatures.signature import Signature
 
 
+def _looks_like_nested_xml(text: str) -> bool:
+    """True when the text contains at least one well-formed child tag pair (nested XML)."""
+    return re.search(r"<(\w+)>.*?</\1>", text, re.DOTALL) is not None
+
+
+def _xml_element_to_obj(element):
+    children = list(element)
+    if not children:
+        return (element.text or "").strip()
+    tags = [child.tag for child in children]
+    if len(set(tags)) == 1 and len(children) > 1:
+        # repeated sibling tag -> list
+        return [_xml_element_to_obj(child) for child in children]
+    obj: dict[str, Any] = {}
+    for child in children:
+        value = _xml_element_to_obj(child)
+        if child.tag in obj:
+            if not isinstance(obj[child.tag], list):
+                obj[child.tag] = [obj[child.tag]]
+            obj[child.tag].append(value)
+        else:
+            obj[child.tag] = value
+    return obj
+
+
+def _xml_fragment_to_obj(fragment: str):
+    """Walk an XML fragment (sibling elements) into a nested dict/list/str structure.
+
+    Distinct sibling tags become a dict, repeated sibling tags become a list, leaf text is stripped.
+    Used to accept genuine nested XML for structured fields (#8481).
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(f"<root>{fragment}</root>")
+    return _xml_element_to_obj(root)
+
+
+def _is_structured_annotation(annotation) -> bool:
+    """True for pydantic models and list/dict/tuple containers (fields that can hold nested XML)."""
+    import typing
+
+    import pydantic
+
+    if typing.get_origin(annotation) in (list, dict, tuple):
+        return True
+    try:
+        return isinstance(annotation, type) and issubclass(annotation, pydantic.BaseModel)
+    except TypeError:
+        return False
+
+
 class XMLAdapter(ChatAdapter):
     field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
 
@@ -106,8 +157,19 @@ class XMLAdapter(ChatAdapter):
     def _parse_field_value(self, field_info, raw, completion, signature):
         from dspy.adapters.utils import parse_value
 
+        value = raw
+        # The write side emits JSON (or a scalar) inside each tag, but an LM may instead emit genuine
+        # nested XML for a structured field (e.g. <person><name>..</name><age>..</age></person>). For
+        # structured fields, walk that nested XML into a dict/list so parse_value can build the model;
+        # scalar fields and the JSON-in-tag form are left untouched (#8481).
+        if _is_structured_annotation(field_info.annotation) and _looks_like_nested_xml(raw):
+            try:
+                value = _xml_fragment_to_obj(raw)
+            except Exception:
+                value = raw
+
         try:
-            return parse_value(raw, field_info.annotation, field_info)
+            return parse_value(value, field_info.annotation, field_info)
         except Exception as e:
             from dspy.utils.exceptions import AdapterParseError
 

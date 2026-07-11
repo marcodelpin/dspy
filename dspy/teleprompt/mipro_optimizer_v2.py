@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import dspy
+from dspy.clients.base_lm import BaseLM
 from dspy.evaluate.evaluate import Evaluate
 from dspy.propose import GroundedProposer
 from dspy.teleprompt.teleprompt import Teleprompter
@@ -105,6 +106,16 @@ class MIPROv2(Teleprompter):
 
         if not self.prompt_model or not self.task_model:
             raise ValueError("Either provide both prompt_model and task_model or set a default LM through dspy.configure(lm=...)")
+
+        # Validate both are actual LM instances. A truthy non-LM value (e.g. a bare model-name string
+        # like "openai/gpt-4o") otherwise sails through here and only crashes deep inside proposal with
+        # an opaque AttributeError (#1930).
+        for _name, _model in (("prompt_model", self.prompt_model), ("task_model", self.task_model)):
+            if not isinstance(_model, BaseLM):
+                raise ValueError(
+                    f"{_name} must be a dspy.LM instance, got {type(_model).__name__}. "
+                    "Wrap it with dspy.LM(...) or set a default via dspy.configure(lm=...)."
+                )
 
     def compile(
         self,

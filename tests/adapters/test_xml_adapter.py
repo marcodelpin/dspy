@@ -142,6 +142,40 @@ def test_xml_adapter_format_and_parse_list_of_models():
     assert parsed["items"][1].score == 2.2
 
 
+def test_xml_adapter_parses_nested_xml_model():
+    """An LM may emit genuine nested XML for a structured field instead of the JSON-in-tag form the
+    write side produces. The adapter must walk the nested tags into the model rather than raising
+    AdapterParseError. Regression test for #8481."""
+
+    class Person(pydantic.BaseModel):
+        name: str
+        age: int
+
+    class TestSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        person: Person = dspy.OutputField()
+
+    completion = "<person>\n  <name>John Doe</name>\n  <age>30</age>\n</person>"
+    parsed = XMLAdapter().parse(TestSignature, completion)
+
+    assert isinstance(parsed["person"], Person)
+    assert parsed["person"].name == "John Doe"
+    assert parsed["person"].age == 30
+
+
+def test_xml_adapter_parses_repeated_nested_tags_as_list():
+    """Repeated sibling tags inside a list-typed field must collapse into a list (#8481)."""
+
+    class TestSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        tags: list[str] = dspy.OutputField()
+
+    completion = "<tags>\n  <item>alpha</item>\n  <item>beta</item>\n</tags>"
+    parsed = XMLAdapter().parse(TestSignature, completion)
+
+    assert parsed["tags"] == ["alpha", "beta"]
+
+
 def test_xml_adapter_with_tool_like_output():
     # XMLAdapter does not natively support tool calls, but we can test structured output
     class ToolCall(pydantic.BaseModel):

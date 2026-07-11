@@ -54,3 +54,17 @@ def test_compile_invokes_estimate_lm_calls(monkeypatch):
         opt.compile(program, trainset=trainset, num_trials=2, valset=trainset, minibatch=False)
 
     assert called.get("yes") is True
+
+
+def test_mipro_rejects_non_lm_prompt_model():
+    """MIPROv2 must reject a prompt_model/task_model that is not an LM instance (e.g. a bare
+    model-name string) at construction time with a clear error, instead of letting it sail through
+    and crash deep inside proposal with an opaque AttributeError. Regression test for #1930."""
+    with pytest.raises(ValueError, match="prompt_model must be a"):
+        MIPROv2(
+            metric=lambda *a, **k: 1.0,
+            auto=None,
+            num_candidates=2,
+            prompt_model="openai/gpt-4o",
+            task_model=dspy.utils.DummyLM([{"answer": "x"}]),
+        )

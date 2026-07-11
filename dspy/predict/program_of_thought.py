@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 import re
@@ -140,6 +141,12 @@ class ProgramOfThought(Module):
         last_line_match = re.match(r"^(\w+)\s*=", lines[-1].strip())
         if last_line_match and len(lines) > 1:
             code_block += "\n" + last_line_match.group(1)
+        # Validate the syntax up front so a malformed snippet surfaces a precise line/message here
+        # instead of an opaque runtime error from the interpreter (#9236).
+        try:
+            ast.parse(code_block)
+        except SyntaxError as e:
+            return code_block, f"Error: Syntax error at line {e.lineno}: {e.msg}"
         return code_block, None
 
     def _execute_code(self, code, interpreter):

@@ -130,3 +130,19 @@ def test_pot_code_parse_error():
     ):
         pot(question="What is 1+1?")
     mock_execute_code.assert_not_called()
+
+
+def test_pot_parse_code_detects_syntax_error():
+    """_parse_code must catch a syntax error early via ast.parse and return a precise message with the
+    line number, instead of passing malformed code on to the interpreter and surfacing an opaque
+    runtime error (#9236)."""
+    dspy.configure(lm=DummyLM([{"generated_code": "x = 1"}]))
+    pot = ProgramOfThought(BasicQA)
+
+    # Unbalanced parenthesis: passes the format heuristics (multi-line, not a bare assignment) but is
+    # invalid Python that previously only surfaced later as an opaque interpreter error.
+    _, error = pot._parse_code({"generated_code": "```python\ndef f(:\n    pass\n```"})
+
+    assert error is not None
+    assert "Syntax error" in error
+    assert "line" in error.lower()

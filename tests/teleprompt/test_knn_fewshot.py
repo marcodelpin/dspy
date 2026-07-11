@@ -64,3 +64,20 @@ def _test_knn_few_shot_compile(setup_knn_few_shot):
     # Validate that the output corresponds to one of the expected DummyLM responses
     # This assumes the compiled_student's forward method will execute the predictor with the given query
     assert output in ["Madrid", "10"], "The compiled student did not return the correct output based on the query"
+
+
+def test_knn_fewshot_compiled_module_rejects_state_save(setup_knn_few_shot, tmp_path):
+    """A KNNFewShot-compiled module retrieves few-shot demonstrations dynamically per query, so it has
+    no static state to serialize. A json/pkl state save previously produced a silently-empty (useless)
+    file; it must instead raise a clear error directing the user to save_program=True. Regression test
+    for #1089."""
+    dspy.configure(lm=DummyLM([{"answer": "Paris"}]))
+    student = SimpleModule("question -> answer")
+    compiled = setup_knn_few_shot.compile(student)
+
+    with pytest.raises(NotImplementedError, match="save_program"):
+        compiled.save(str(tmp_path / "state.json"))
+
+    # save_program=True (cloudpickle) remains the supported way to persist the dynamic module.
+    compiled.save(str(tmp_path / "prog"), save_program=True)
+    assert (tmp_path / "prog" / "program.pkl").exists()

@@ -5,13 +5,9 @@ import os
 from typing import Any, Union
 
 import pydantic
-import requests
 
+from dspy.adapters.types._http_download import download_bytes
 from dspy.adapters.types.base_type import Type
-
-# Bound the network fetch so a slow or intentionally-hanging endpoint cannot block
-# the request indefinitely (requests.get has no timeout by default).
-_DOWNLOAD_TIMEOUT = 30
 
 try:
     import soundfile as sf
@@ -60,12 +56,17 @@ class Audio(Type):
         return encode_audio(values)
 
     @classmethod
-    def from_url(cls, url: str) -> "Audio":
+    def from_url(cls, url: str, *, verify: bool = True) -> "Audio":
         """
-        Download an audio file from URL and encode it as base64.
+        Download an audio file from a URL and encode it as base64.
+
+        The fetch is guarded against SSRF (the host must resolve to a public address; private,
+        loopback, link-local, reserved and cloud-metadata targets are refused) and against a
+        slow/oversized response (per-read timeout + total deadline + size cap). This is the
+        explicit, opt-in download path: implicit coercion of a URL string into an ``Audio`` field
+        does NOT auto-download.
         """
-        response = requests.get(url, timeout=_DOWNLOAD_TIMEOUT)
-        response.raise_for_status()
+        response = download_bytes(url, verify=verify)
         mime_type = response.headers.get("Content-Type", "audio/wav")
         if not mime_type.startswith("audio/"):
             raise ValueError(f"Unsupported MIME type for audio: {mime_type}")
@@ -151,8 +152,15 @@ def encode_audio(audio: Union[str, bytes, dict, "Audio", Any], sampling_rate: in
         a = Audio.from_file(audio)
         return {"data": a.data, "audio_format": a.audio_format}
     elif isinstance(audio, str) and audio.startswith("http"):
-        a = Audio.from_url(audio)
-        return {"data": a.data, "audio_format": a.audio_format}
+        # Do NOT auto-download here. This branch runs during implicit coercion of an arbitrary
+        # string (a tool result, a retrieved-document field, a model output) into an Audio field,
+        # so auto-fetching would be an SSRF/DoS surface on untrusted input. Downloading is opt-in
+        # via the explicit, guarded Audio.from_url(url).
+        raise ValueError(
+            "Refusing to auto-download audio from a URL during implicit coercion (SSRF/DoS risk "
+            "on untrusted input). Call Audio.from_url(url) to download explicitly (with SSRF + "
+            "timeout + size guards), or pass a data URI, a local file path, or raw bytes."
+        )
     elif SF_AVAILABLE and hasattr(audio, "shape"):
         a = Audio.from_array(audio, sampling_rate=sampling_rate, format=format)
         return {"data": a.data, "audio_format": a.audio_format}

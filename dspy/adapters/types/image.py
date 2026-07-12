@@ -7,13 +7,9 @@ from typing import Any, Union
 from urllib.parse import urlparse
 
 import pydantic
-import requests
 
+from dspy.adapters.types._http_download import download_bytes
 from dspy.adapters.types.base_type import Type
-
-# Bound the network fetch so a slow or intentionally-hanging endpoint cannot block
-# the request indefinitely (requests.get has no timeout by default).
-_DOWNLOAD_TIMEOUT = 30
 
 try:
     from PIL import Image as PILImage
@@ -199,13 +195,17 @@ def _encode_image_from_file(file_path: str) -> str:
 
 def _encode_image_from_url(image_url: str, verify: bool = True) -> str:
     """Encode a file from a URL to a base64 data URI.
-    
+
+    The fetch is guarded against SSRF (the host must resolve to a public address) and against a
+    slow/oversized response (per-read timeout + total deadline + size cap). This runs only on the
+    explicit opt-in download path (``Image(url, download=True)``); by default a URL is stored as-is
+    and never fetched.
+
     Args:
         image_url: The URL of the image to download.
         verify: Whether to verify SSL certificates. Set to False for self-signed certs.
     """
-    response = requests.get(image_url, verify=verify, timeout=_DOWNLOAD_TIMEOUT)
-    response.raise_for_status()
+    response = download_bytes(image_url, verify=verify)
     content_type = response.headers.get("Content-Type", "")
 
     # Use the content type from the response headers if available

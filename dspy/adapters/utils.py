@@ -2,6 +2,7 @@ import ast
 import enum
 import inspect
 import json
+import re
 import types
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
@@ -146,6 +147,19 @@ def find_enum_member(enum, identifier):
     raise ValueError(f"{identifier} is not a valid name or value for the enum {enum.__name__}")
 
 
+_MARKDOWN_CODE_FENCE = re.compile(r"\s*```[^\n]*\n(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
+
+
+def _strip_markdown_code_fence(text):
+    """Return the inner body of a single ```lang ... ``` markdown code fence, or None.
+
+    An LM sometimes wraps a dict/list value in a fenced code block. Returns None when
+    `text` is not a single fenced block, so callers can leave non-fenced input untouched.
+    """
+    match = _MARKDOWN_CODE_FENCE.fullmatch(text)
+    return match.group("body") if match else None
+
+
 def parse_value(value, annotation, field_info=None):
     # Field constraints (max_length, ge, le, ...) live in FieldInfo.metadata, not in the bare
     # annotation, so a TypeAdapter built from the annotation alone silently ignores them. Re-attach
@@ -199,9 +213,23 @@ def parse_value(value, annotation, field_info=None):
     try:
         candidate = ast.literal_eval(value)
     except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
-        candidate = json_repair.loads(value)  # json_repair.loads returns "" on failure.
-        if candidate == "" and value != "":
-            candidate = value
+        # An LM may wrap a dict/list value in a markdown code fence (```python ... ```),
+        # which ast.literal_eval cannot parse. Strip a single fence and retry so Python
+        # literals (None/True/False) survive; json_repair would coerce a bare None to the
+        # string "None" (#8181).
+        parsed = False
+        candidate = None
+        unfenced = _strip_markdown_code_fence(value)
+        if unfenced is not None and unfenced != value:
+            try:
+                candidate = ast.literal_eval(unfenced)
+                parsed = True
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                parsed = False
+        if not parsed:
+            candidate = json_repair.loads(value)  # json_repair.loads returns "" on failure.
+            if candidate == "" and value != "":
+                candidate = value
 
     try:
         return _validate(candidate)

@@ -198,10 +198,13 @@ def test_interpreter_security_filesystem_access(tmp_path):
     secret_path_str = str(secret_file.absolute())
 
     # 2. Attempt to read the file WITHOUT permission
+    # NB: inject the path with !r so backslashes in a Windows path (e.g. the \t in
+    # a "...\test..." temp dir) are escaped as a proper Python string literal instead
+    # of being reinterpreted as escape sequences inside the sandboxed code.
     malicious_code = f"""
 import js
 try:
-    content = js.Deno.readTextFileSync('{secret_path_str}')
+    content = js.Deno.readTextFileSync({secret_path_str!r})
     print(content)
 except Exception as e:
     print(f"Error: {{e}}")

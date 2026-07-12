@@ -3,7 +3,6 @@ import io
 import mimetypes
 import os
 import warnings
-from functools import lru_cache
 from typing import Any, Union
 from urllib.parse import urlparse
 
@@ -70,8 +69,12 @@ class Image(Type):
         # Delegate the rest of initialization to pydantic's BaseModel.
         super().__init__(**data)
 
-    @lru_cache(maxsize=32)
     def format(self) -> list[dict[str, Any]] | str:
+        # NB: no @lru_cache here. An lru_cache on this bound method keys on `self`, so
+        # (Image is a frozen/hashable model carrying a base64 payload) it pinned every
+        # formatted Image alive in a process-wide cache -> memory leak on the multimodal /
+        # GEPA path (#8891/#8848). format() is cheap (self.url is already an encoded data
+        # URI or a pass-through URL), so recomputing per call is fine.
         try:
             image_url = encode_image(self.url)
         except Exception as e:

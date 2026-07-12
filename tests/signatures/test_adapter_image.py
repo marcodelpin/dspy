@@ -501,3 +501,33 @@ def test_pil_image_with_download_parameter():
 
     # They should be identical since PIL images are always encoded
     assert image_no_download.url == image_with_download.url
+
+
+def test_image_format_does_not_leak_instances():
+    """Regression #8891/#8848: Image.format must not pin instances in a shared cache.
+
+    A class-level ``@lru_cache`` on the bound ``format`` method held a strong
+    reference to every Image that ever called ``.format()`` (keyed on ``self``),
+    leaking the base64 payload for up to 32 images across the process. This is
+    the multimodal / GEPA memory-leak the issues report.
+
+    Deterministic + fully offline: a data-URI input is passed through unchanged
+    (no PIL, no network).
+    """
+    import gc
+    import weakref
+
+    data_uri = "data:image/png;base64," + "A" * 512
+    img = dspy.Image(data_uri)
+    ref = weakref.ref(img)
+
+    # Populate whatever caching `format` does.
+    img.format()
+
+    del img
+    gc.collect()
+
+    assert ref() is None, (
+        "Image instance leaked: still referenced after del+gc — Image.format is pinning "
+        "instances in a shared cache (#8891/#8848)."
+    )

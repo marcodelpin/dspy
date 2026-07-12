@@ -9,6 +9,10 @@ import requests
 
 from dspy.adapters.types.base_type import Type
 
+# Bound the network fetch so a slow or intentionally-hanging endpoint cannot block
+# the request indefinitely (requests.get has no timeout by default).
+_DOWNLOAD_TIMEOUT = 30
+
 try:
     import soundfile as sf
 
@@ -60,7 +64,7 @@ class Audio(Type):
         """
         Download an audio file from URL and encode it as base64.
         """
-        response = requests.get(url)
+        response = requests.get(url, timeout=_DOWNLOAD_TIMEOUT)
         response.raise_for_status()
         mime_type = response.headers.get("Content-Type", "audio/wav")
         if not mime_type.startswith("audio/"):

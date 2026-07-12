@@ -16,6 +16,7 @@ For compatibility with the legacy dsp format, you can use the signature_to_templ
 """
 
 import ast
+import copyreg
 import importlib
 import inspect
 import re
@@ -863,3 +864,37 @@ def infer_prefix(attribute_name: str) -> str:
     # Join words with spaces
     # Example: ["Text", "2", "Number"] -> "Text 2 Number"
     return " ".join(title_cased_words)
+
+
+def _lookup_signature_by_qualname(module_name: str, qualname: str):
+    obj = importlib.import_module(module_name)
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _rebuild_signature(fields, instructions, name):
+    return make_signature(fields, instructions, name)
+
+
+def _reduce_signature_class(cls):
+    """Pickle reducer for Signature classes (registered on SignatureMeta via copyreg).
+
+    Signatures declared at module scope are importable, so they pickle by reference
+    exactly like any other class. But signatures built dynamically (``make_signature`` /
+    ``create_model``, e.g. ``dspy.Signature("q -> a")`` or ``dspy.ChainOfThought(...)``)
+    are NOT bound at their stated ``__module__.__qualname__`` (all named
+    ``dspy.signatures.signature.StringSignature``), so stock pickle's by-reference save
+    fails and breaks GEPA's default pickle-based checkpointing (#8906). Reconstruct those
+    by value via ``make_signature`` instead. cloudpickle is unaffected (it already
+    serialized these by value).
+    """
+    module = sys.modules.get(cls.__module__)
+    if module is not None and getattr(module, cls.__qualname__, None) is cls:
+        return (_lookup_signature_by_qualname, (cls.__module__, cls.__qualname__))
+    fields = {name: (field.annotation, field) for name, field in cls.model_fields.items()}
+    return (_rebuild_signature, (fields, cls.instructions, cls.__name__))
+
+
+# Make dynamically-created Signature subclasses picklable with the stdlib pickle module (#8906).
+copyreg.pickle(SignatureMeta, _reduce_signature_class)

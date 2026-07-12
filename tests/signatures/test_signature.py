@@ -638,3 +638,38 @@ def test_predict_cloudpickle_roundtrip():
     loaded = pickle.loads(data)
 
     assert list(loaded.signature.fields.keys()) == ["question", "answer"]
+
+
+class _ModuleScopeSignatureForPickle(dspy.Signature):
+    """A normally-declared, importable signature (must keep pickling by reference)."""
+
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+def test_dynamic_signature_is_stock_picklable():
+    """#8906: a dynamically-created Signature (dspy.Signature("q -> a")) is not importable,
+    so stock pickle used to fail with 'attribute lookup StringSignature ... failed',
+    which broke GEPA's default (pickle-based) checkpointing of programs built from base
+    modules. It must round-trip through stock pickle. Fully offline + deterministic."""
+    sig = dspy.Signature("question -> answer", "Answer the question.")
+    restored = pickle.loads(pickle.dumps(sig))
+    assert list(restored.input_fields) == ["question"]
+    assert list(restored.output_fields) == ["answer"]
+    assert restored.instructions == sig.instructions
+
+
+def test_module_with_dynamic_signature_is_stock_picklable():
+    """#8906: a base module carrying a dynamic signature must survive stock pickle."""
+    program = dspy.ChainOfThought("question -> answer")
+    restored = pickle.loads(pickle.dumps(program))
+    assert isinstance(restored, dspy.ChainOfThought)
+    demos_sig = restored.predict.signature
+    assert "answer" in demos_sig.output_fields
+
+
+def test_module_scope_signature_still_pickles_by_reference():
+    """Regression guard: an importable, module-scope signature must keep pickling by
+    reference (same class object), not be rebuilt by value."""
+    restored = pickle.loads(pickle.dumps(_ModuleScopeSignatureForPickle))
+    assert restored is _ModuleScopeSignatureForPickle

@@ -12,6 +12,7 @@ import inspect
 import json
 import keyword
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -480,17 +481,11 @@ class PythonInterpreter:
         elif isinstance(value, bool):
             # Must check bool before int since bool is a subclass of int
             return "True" if value else "False"
-        elif isinstance(value, int):
-            return str(value)
-        elif isinstance(value, float):
-            # str() emits bare 'inf'/'-inf'/'nan', which are NOT valid Python literals; injecting
-            # `x = inf` would raise NameError in the sandbox. Emit valid literal expressions (#9990).
-            if value != value:  # NaN (only value not equal to itself)
-                return "float('nan')"
-            if value == float("inf"):
-                return "float('inf')"
-            if value == float("-inf"):
-                return "float('-inf')"
+        elif isinstance(value, float) and not math.isfinite(value):
+            # str(inf/-inf/nan) returns bare words ("inf", "nan") that are not valid
+            # Python literals; wrap them so they evaluate correctly in the sandbox.
+            return f"float('{value}')"
+        elif isinstance(value, (int, float)):
             return str(value)
         elif isinstance(value, (list, tuple)):
             # Tuples become lists for JSON compatibility

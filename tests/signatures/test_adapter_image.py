@@ -531,3 +531,27 @@ def test_image_format_does_not_leak_instances():
         "Image instance leaked: still referenced after del+gc — Image.format is pinning "
         "instances in a shared cache (#8891/#8848)."
     )
+
+
+def test_encode_image_from_url_passes_timeout():
+    """Regression (#9993): the image URL download must bound the fetch with a timeout.
+
+    Without a timeout, a slow/hanging endpoint blocks the request indefinitely.
+    """
+    from unittest import mock
+
+    from dspy.adapters.types.image import _encode_image_from_url
+
+    fake_response = mock.Mock()
+    fake_response.headers = {"Content-Type": "image/png"}
+    fake_response.content = b"\x89PNG\r\n\x1a\n"
+    fake_response.raise_for_status = mock.Mock()
+
+    with mock.patch("dspy.adapters.types.image.requests.get", return_value=fake_response) as mock_get:
+        _encode_image_from_url("http://example.com/dog.png")
+
+    mock_get.assert_called_once()
+    timeout = mock_get.call_args.kwargs.get("timeout")
+    assert timeout is not None and timeout > 0, (
+        "_encode_image_from_url must pass a positive timeout to requests.get"
+    )

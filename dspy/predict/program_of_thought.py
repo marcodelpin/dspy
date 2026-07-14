@@ -2,10 +2,18 @@ import ast
 import json
 import logging
 import re
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 import dspy
-from dspy.primitives.code_interpreter import FinalOutput
+from dspy.primitives.code_interpreter import (
+    CodeExecutionError,
+    CodeInterpreter,
+    FinalOutput,
+    _create_interpreter,
+    _validate_interpreter,
+    _validate_interpreter_factory,
+)
 from dspy.primitives.module import Module
 from dspy.primitives.python_interpreter import PythonInterpreter
 from dspy.signatures.signature import Signature, ensure_signature
@@ -29,19 +37,21 @@ class ProgramOfThought(Module):
     ```
     """
 
-    def __init__(self, signature: str | type[Signature], max_iters: int = 3, interpreter: PythonInterpreter | None = None):
+    def __init__(
+        self,
+        signature: str | type[Signature],
+        max_iters: int = 3,
+        interpreter_factory: Callable[[], CodeInterpreter] = PythonInterpreter,
+    ):
         """
         Args:
             signature: The signature of the module.
             max_iters: The maximum number of iterations to retry code generation and execution.
-            interpreter: PythonInterpreter instance to use. If None (default), a fresh
-                interpreter is created for each forward() call and shut down afterwards,
-                which keeps concurrent calls (e.g. dspy.Evaluate with num_threads > 1)
-                isolated from each other. A user-provided interpreter is reused across
-                calls, its lifecycle belongs to the caller, and it is not safe for
-                concurrent execution (mirrors dspy.RLM semantics).
+            interpreter_factory: Zero-argument callable that creates an interpreter for each forward pass. The
+                callable may be invoked concurrently, and DSPy shuts down each interpreter it returns.
         """
         super().__init__()
+        _validate_interpreter_factory(interpreter_factory)
         self.signature = signature = ensure_signature(signature)
         self.max_iters = max_iters
 
@@ -66,7 +76,21 @@ class ProgramOfThought(Module):
                 self._generate_instruction("answer"),
             ),
         )
-        self.interpreter = interpreter
+        self._interpreter_factory = interpreter_factory
+
+    @contextmanager
+    def _interpreter_context(self, interpreter: CodeInterpreter | None) -> Iterator[CodeInterpreter]:
+        """Yield a caller-owned interpreter or manage a factory-created one."""
+        if interpreter is not None:
+            _validate_interpreter(interpreter)
+            yield interpreter
+            return
+
+        interpreter = _create_interpreter(self._interpreter_factory)
+        try:
+            yield interpreter
+        finally:
+            interpreter.shutdown()
 
     def _generate_signature(self, mode):
         signature_dict = dict(self.input_fields)
@@ -149,9 +173,9 @@ class ProgramOfThought(Module):
             return code_block, f"Error: Syntax error at line {e.lineno}: {e.msg}"
         return code_block, None
 
-    def _execute_code(self, code, interpreter):
+    def _execute_code(self, code: str, interpreter: CodeInterpreter):
         """
-        Execute the code using PythonInterpreter and return the output or error.
+        Execute the code using the current interpreter and return the output or error.
         """
         if not code:
             return None, "Error: Empty code before execution."
@@ -163,36 +187,25 @@ class ProgramOfThought(Module):
             # Since it's more complex structure now, just blindly use json to represents all.
             output = json.dumps(result)
             return output, None
-        except Exception as e:
+        except (CodeExecutionError, SyntaxError) as e:
             return None, str(e)
 
-    @contextmanager
-    def _interpreter_context(self):
-        """Yield the interpreter to use for a single forward() call.
+    def forward(self, interpreter: CodeInterpreter | None = None, /, **kwargs):
+        """Run the program with a fresh interpreter or a caller-owned override.
 
-        A PythonInterpreter instance is not thread-safe, so unless the user
-        provided their own instance at construction time, every call gets a
-        fresh interpreter (shut down afterwards) to keep concurrent executions
-        isolated (e.g. dspy.Evaluate with num_threads > 1). A user-provided
-        interpreter is reused and its lifecycle belongs to the caller,
-        mirroring dspy.RLM semantics.
+        Args:
+            interpreter: Optional caller-owned interpreter, passed positionally. The caller must shut it down.
+            **kwargs: Input values matching the signature's input fields.
+
+        Raises:
+            CodeInterpreterError: If interpreter setup, process, or protocol fails.
         """
-        if self.interpreter is not None:
-            yield self.interpreter
-        else:
-            interpreter = PythonInterpreter()
-            try:
-                yield interpreter
-            finally:
-                try:
-                    interpreter.shutdown()
-                except Exception:
-                    # Never mask an in-flight exception with a shutdown failure.
-                    logger.warning("Failed to shut down PythonInterpreter cleanly", exc_info=True)
-
-    def forward(self, **kwargs):
-        input_kwargs = {field_name: kwargs[field_name] for field_name in self.input_fields}
-        with self._interpreter_context() as interpreter:
+        if "interpreter" in kwargs and "interpreter" not in self.input_fields:
+            raise TypeError(
+                "To use a caller-owned interpreter, pass it as the first positional argument when calling the module."
+            )
+        with self._interpreter_context(interpreter) as interpreter:
+            input_kwargs = {field_name: kwargs[field_name] for field_name in self.input_fields}
             code_data = self.code_generate(**input_kwargs)
             output = None
             code, error = self._parse_code(code_data)

@@ -6,6 +6,7 @@ import dspy
 from dspy.adapters.types.tool import Tool
 from dspy.predict.program_of_thought import ProgramOfThought
 from dspy.predict.react import ReAct
+from dspy.primitives.code_interpreter import CodeInterpreter, _validate_interpreter_factory
 from dspy.primitives.python_interpreter import PythonInterpreter
 from dspy.signatures.signature import Signature, ensure_signature
 from dspy.utils.exceptions import AdapterParseError
@@ -17,7 +18,13 @@ class CodeAct(ReAct, ProgramOfThought):
     CodeAct is a module that utilizes the Code Interpreter and predefined tools to solve the problem.
     """
 
-    def __init__(self, signature: str | type[Signature], tools: list[Callable], max_iters: int = 5, interpreter: PythonInterpreter | None = None):
+    def __init__(
+        self,
+        signature: str | type[Signature],
+        tools: list[Callable],
+        max_iters: int = 5,
+        interpreter_factory: Callable[[], CodeInterpreter] = PythonInterpreter,
+    ):
         """
         Initializes the CodeAct class with the specified model, temperature, and max tokens.
 
@@ -25,12 +32,8 @@ class CodeAct(ReAct, ProgramOfThought):
             signature (Union[str, Type[Signature]]): The signature of the module.
             tools (list[Callable]): The tool callables to be used. CodeAct only accepts functions and not callable objects.
             max_iters (int): The maximum number of iterations to generate the answer.
-            interpreter: PythonInterpreter instance to use. If None (default), a fresh
-                interpreter is created for each forward() call and shut down afterwards,
-                which keeps concurrent calls (e.g. dspy.Evaluate with num_threads > 1)
-                isolated from each other. A user-provided interpreter is reused across
-                calls, its lifecycle belongs to the caller, and it is not safe for
-                concurrent execution (mirrors dspy.RLM semantics).
+            interpreter_factory: Zero-argument callable that creates an interpreter for each forward pass. The
+                callable may be invoked concurrently, and DSPy shuts down each interpreter it returns.
         Examples:
             ```python
             from dspy.predict import CodeAct
@@ -43,6 +46,7 @@ class CodeAct(ReAct, ProgramOfThought):
             act(n=5) # 120
             ```
         """
+        _validate_interpreter_factory(interpreter_factory)
         self.signature = ensure_signature(signature)
         self.max_iters = max_iters
         self.history = []
@@ -71,7 +75,7 @@ class CodeAct(ReAct, ProgramOfThought):
         self.tools: dict[str, Tool] = tools
         self.codeact = dspy.Predict(codeact_signature)
         self.extractor = dspy.ChainOfThought(extract_signature)
-        self.interpreter = interpreter
+        self._interpreter_factory = interpreter_factory
 
     def _build_instructions(self, signature, tools):
         instructions = [f"{signature.instructions}\n"] if signature.instructions else []
@@ -92,11 +96,24 @@ class CodeAct(ReAct, ProgramOfThought):
 
         return instructions
 
-    def forward(self, **kwargs):
-        with self._interpreter_context() as interpreter:
+    def forward(self, interpreter: CodeInterpreter | None = None, /, **kwargs):
+        """Run the program with a fresh interpreter or a caller-owned override.
+
+        Args:
+            interpreter: Optional caller-owned interpreter, passed positionally. The caller must shut it down.
+            **kwargs: Input values matching the signature's input fields.
+
+        Raises:
+            CodeInterpreterError: If interpreter setup, process, or protocol fails.
+        """
+        if "interpreter" in kwargs and "interpreter" not in self.signature.input_fields:
+            raise TypeError(
+                "To use a caller-owned interpreter, pass it as the first positional argument when calling the module."
+            )
+        with self._interpreter_context(interpreter) as interpreter:
             # Define the tool functions in the interpreter
             for tool in self.tools.values():
-                interpreter(inspect.getsource(tool.func))
+                interpreter.execute(inspect.getsource(tool.func))
 
             trajectory = {}
             max_iters = kwargs.pop("max_iters", self.max_iters)
@@ -131,15 +148,23 @@ class CodeAct(ReAct, ProgramOfThought):
             extract = self._call_extract_with_parse_retry(self.extractor, trajectory, **kwargs)
             return dspy.Prediction(trajectory=trajectory, **extract)
 
-    async def aforward(self, **kwargs):
-        # Async mirror of forward(). CodeAct does NOT set self.react/self.extract, so inheriting
-        # ReAct.aforward raised AttributeError on acall(); provide a CodeAct-specific async path
-        # (dspy-374). Only the LM calls are awaited; code execution stays synchronous because the
-        # PythonInterpreter (a Deno subprocess) is not thread-safe and must run on the calling thread.
-        with self._interpreter_context() as interpreter:
+    async def aforward(self, interpreter: CodeInterpreter | None = None, /, **kwargs):
+        """Async mirror of forward() (dspy-374).
+
+        CodeAct does NOT set self.react/self.extract, so inheriting ReAct.aforward raised
+        AttributeError on acall(); provide a CodeAct-specific async path. Only the LM calls
+        are awaited; code execution stays synchronous because interpreters (e.g. the Deno
+        subprocess behind PythonInterpreter) are not thread-safe and must run on the
+        calling thread.
+        """
+        if "interpreter" in kwargs and "interpreter" not in self.signature.input_fields:
+            raise TypeError(
+                "To use a caller-owned interpreter, pass it as the first positional argument when calling the module."
+            )
+        with self._interpreter_context(interpreter) as interpreter:
             # Define the tool functions in the interpreter
             for tool in self.tools.values():
-                interpreter(inspect.getsource(tool.func))
+                interpreter.execute(inspect.getsource(tool.func))
 
             trajectory = {}
             max_iters = kwargs.pop("max_iters", self.max_iters)

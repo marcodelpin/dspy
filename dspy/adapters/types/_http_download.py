@@ -10,18 +10,22 @@ Centralizes the SSRF + timeout + size guards so Image and Audio do not each re-i
    hop by hop, so a public URL cannot 3xx-bounce to an internal one. Ambiguous authorities
    (backslash / whitespace / userinfo) that make the validating parser and the connecting
    parser disagree on the host are rejected outright.
-2. DoS guard: a per-read timeout plus a hard *total* wall-clock deadline (enforced by a
+2. IP pinning (DNS-rebinding TOCTOU defense): the socket connects to one of the exact IPs
+   that passed validation. The hostname is NOT re-resolved at connect time, so an
+   attacker-controlled nameserver that answers the validation query with a public IP and
+   the connect query with an internal one gains nothing: the connect never asks DNS again.
+   For HTTPS the pin preserves SNI and certificate verification against the ORIGINAL
+   hostname (``server_hostname`` + ``assert_hostname`` on the connection pool), and the
+   ``Host`` header always carries the original host. When an environment proxy applies,
+   the proxy performs the connect (and the resolution) itself: the local
+   resolve-vs-connect TOCTOU this pin closes does not exist on that path, so the fetch
+   goes through the proxy unpinned (rewriting the URL to an IP would only break proxy
+   ACLs and CONNECT-by-name semantics).
+3. DoS guard: a per-read timeout plus a hard *total* wall-clock deadline (enforced by a
    watchdog that closes the socket, so a slow-trickle peer that keeps the per-read timeout
    from ever firing still cannot hold the connection open) plus a maximum-byte cap; the
    response is requested with ``Accept-Encoding: identity`` so a small compressed body cannot
    expand past the cap.
-
-Known residual (see also the ``download`` gate on Image / Audio, which is the primary defense):
-the host is validated by name and requests then re-resolves it at connect time, leaving a
-DNS-rebinding TOCTOU window. Closing it fully needs pinning the validated IP onto the socket
-(a custom transport adapter that preserves SNI + cert verification); tracked as a follow-up.
-Because auto-download is disabled by default and only an explicit opt-in reaches this path,
-the rebinding residual applies to deliberately-initiated downloads, not to untrusted coercion.
 """
 
 import ipaddress
@@ -30,9 +34,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from urllib.parse import urlparse
+from typing import Callable
+from urllib.parse import urlparse, urlunparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import RequestException
 
 # Per-read (inactivity) timeout handed to requests, and the total wall-clock deadline for the
@@ -110,9 +117,13 @@ def _is_disallowed(ip: ipaddress._BaseAddress) -> bool:
     return any(ip in net for net in _EXTRA_DISALLOWED_NETWORKS)
 
 
-def assert_public_url(url: str) -> None:
+def assert_public_url(url: str) -> list[str]:
     """Refuse ``url`` unless it is an unambiguous http(s) URL whose host resolves *only* to
-    public IPs.
+    public IPs; return the validated addresses.
+
+    Returns the resolved IP strings, deduplicated, in ``getaddrinfo`` preference order. The
+    caller pins the connection to one of these exact addresses (see :func:`_pinned_get`), so
+    a nameserver that answers differently on a second lookup cannot redirect the socket.
 
     Raises :class:`UnsafeURLError` for a non-http(s) scheme, an ambiguous authority (backslash /
     whitespace / userinfo, which can desync the validating and connecting parsers), a missing or
@@ -146,7 +157,15 @@ def assert_public_url(url: str) -> None:
         except socket.gaierror as e:
             raise UnsafeURLError(f"Could not resolve host {host!r}: {e}") from e
 
-    resolved = {info[4][0] for info in infos}
+    # Ordered dedup: keep getaddrinfo's preference order so the pin tries the OS-preferred
+    # address first (a plain set would randomize which validated IP gets dialed).
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for info in infos:
+        addr = info[4][0]
+        if addr not in seen:
+            seen.add(addr)
+            resolved.append(addr)
     if not resolved:
         raise UnsafeURLError(f"Host {host!r} resolved to no addresses")
 
@@ -161,44 +180,119 @@ def assert_public_url(url: str) -> None:
                 f"(private/loopback/link-local/reserved/CGNAT). This blocks SSRF to internal "
                 f"services and cloud metadata endpoints."
             )
+    return resolved
+
+
+class _PinnedHTTPSAdapter(HTTPAdapter):
+    """Transport adapter for a URL rewritten to a validated IP literal: TLS still handshakes
+    (SNI) and verifies the certificate against the ORIGINAL hostname.
+
+    ``server_hostname`` / ``assert_hostname`` are set as pool kwargs; urllib3's
+    ``_merge_pool_kwargs`` folds them into every pool this adapter creates, including the
+    per-request ``pool_kwargs`` path requests >= 2.32 uses (``get_connection_with_tls_context``
+    merges, it does not replace)."""
+
+    def __init__(self, tls_hostname: str) -> None:
+        self._tls_hostname = tls_hostname
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["server_hostname"] = self._tls_hostname
+        pool_kwargs["assert_hostname"] = self._tls_hostname
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _pinned_netloc(ip: str, port: "int | None") -> str:
+    """Authority for a URL that dials ``ip`` directly (IPv6 literals get bracketed)."""
+    host = f"[{ip}]" if ":" in ip else ip
+    return host if port is None else f"{host}:{port}"
+
+
+def _pinned_get(
+    url: str,
+    validated_ips: "list[str]",
+    *,
+    verify,
+    timeout,
+) -> "tuple[requests.Response, Callable[[], None]]":
+    """One redirect-free GET of ``url`` that connects to a *validated* IP instead of
+    re-resolving the hostname (the DNS-rebinding pin). Returns ``(response, close_transport)``;
+    the caller MUST invoke ``close_transport()`` once the (streamed) response is consumed.
+
+    Tries each validated IP in order and falls back to the next on a connection error, so a
+    multi-homed host keeps the availability it had when requests iterated ``getaddrinfo``
+    results itself. When an environment proxy applies to ``url`` the fetch is deliberately
+    unpinned (see module docstring, point 2).
+    """
+    common = {
+        "stream": True,
+        "allow_redirects": False,
+        "verify": verify,
+        "timeout": timeout,
+    }
+    # Accept-Encoding: identity so a compressed body cannot decompress past the byte cap.
+    if requests.utils.get_environ_proxies(url):
+        resp = requests.get(url, headers={"Accept-Encoding": "identity"}, **common)
+        return resp, (lambda: None)
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    host_header = host if parsed.port is None else f"{host}:{parsed.port}"
+
+    last_exc: "RequestsConnectionError | None" = None
+    for ip in validated_ips:
+        pinned_url = urlunparse(parsed._replace(netloc=_pinned_netloc(ip, parsed.port)))
+        session = requests.Session()
+        try:
+            if parsed.scheme == "https":
+                session.mount("https://", _PinnedHTTPSAdapter(host))
+            resp = session.get(
+                pinned_url,
+                headers={"Accept-Encoding": "identity", "Host": host_header},
+                **common,
+            )
+            return resp, session.close
+        except RequestsConnectionError as e:
+            session.close()
+            last_exc = e
+        except BaseException:
+            session.close()
+            raise
+    raise last_exc  # every validated IP refused the connection
 
 
 def download_bytes(url: str, *, verify: bool = True) -> requests.Response:
     """Fetch ``url`` and return the completed :class:`requests.Response` (with ``.content`` and
-    ``.headers`` populated), enforcing the SSRF guard on every hop and the total deadline + size
-    cap on the body.
+    ``.headers`` populated), enforcing the SSRF guard + IP pin on every hop and the total
+    deadline + size cap on the body.
 
     ``verify`` is forwarded to requests for TLS certificate verification.
     """
     deadline = time.monotonic() + _TOTAL_DEADLINE
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
-        assert_public_url(current)
+        validated_ips = assert_public_url(current)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise UnsafeURLError(f"Download exceeded the total deadline of {_TOTAL_DEADLINE}s")
 
         read_timeout = max(1.0, min(_READ_TIMEOUT, remaining))
-        resp = requests.get(
-            current,
-            stream=True,
-            allow_redirects=False,
-            verify=verify,
-            # identity so a compressed body cannot decompress past the byte cap
-            headers={"Accept-Encoding": "identity"},
-            timeout=(read_timeout, read_timeout),
+        resp, close_transport = _pinned_get(
+            current, validated_ips, verify=verify, timeout=(read_timeout, read_timeout)
         )
+        try:
+            if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location")
+                resp.close()
+                if not location:
+                    raise UnsafeURLError("Redirect response without a Location header")
+                current = requests.compat.urljoin(current, location)
+                continue
 
-        if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location")
-            resp.close()
-            if not location:
-                raise UnsafeURLError("Redirect response without a Location header")
-            current = requests.compat.urljoin(current, location)
-            continue
-
-        resp.raise_for_status()
-        return _read_capped(resp, deadline)
+            resp.raise_for_status()
+            return _read_capped(resp, deadline)
+        finally:
+            close_transport()
 
     raise UnsafeURLError(f"Too many redirects (> {_MAX_REDIRECTS}) while downloading {url!r}")
 

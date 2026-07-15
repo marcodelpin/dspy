@@ -2,6 +2,7 @@ import threading
 from typing import Any
 
 from dspy.dsp.utils.settings import settings
+from dspy.primitives.base_module import BaseModule
 from dspy.primitives.example import Example
 from dspy.utils.parallelizer import ParallelExecutor
 
@@ -87,29 +88,32 @@ class Parallel:
         )
 
         def process_pair(pair):
-            result = None
             module, example = pair
 
-            # Establish a fresh usage tracker per sub-call so usage is attached to each result. Without
-            # this the sub-call inherits the outer track_usage() context's ambient tracker, and
-            # Module.__call__ skips attaching usage, silently discarding per-item tokens (#9201).
-            with settings.context(usage_tracker=None):
+            def invoke():
                 if isinstance(example, Example):
                     if self.access_examples:
-                        result = module(**example.inputs())
-                    else:
-                        result = module(example)
+                        return module(**example.inputs())
+                    return module(example)
                 elif isinstance(example, dict):
-                    result = module(**example)
+                    return module(**example)
                 elif isinstance(example, list) and module.__class__.__name__ == "Parallel":
-                    result = module(example)
+                    return module(example)
                 elif isinstance(example, tuple):
-                    result = module(*example)
-                else:
-                    raise ValueError(
-                        f"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple"
-                    )
-            return result
+                    return module(*example)
+                raise ValueError(
+                    f"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple"
+                )
+
+            # #9201: give each dspy Module sub-call its OWN usage tracker so per-item LM usage attaches
+            # to its result instead of merging into (and being skipped by) an outer track_usage() ambient
+            # tracker. Only for BaseModule sub-calls: a plain callable may legitimately read/write the
+            # ambient tracker itself, which is the upstream Parallel-with-usage-tracker contract, so it
+            # must NOT be nulled out. Top-level Parallel (no ambient tracker) is unaffected either way.
+            if isinstance(module, BaseModule):
+                with settings.context(usage_tracker=None):
+                    return invoke()
+            return invoke()
 
         # Execute the processing function over the execution pairs
         results = executor.execute(process_pair, exec_pairs)

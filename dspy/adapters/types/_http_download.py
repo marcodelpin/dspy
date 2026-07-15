@@ -239,7 +239,7 @@ def _pinned_get(
     host = parsed.hostname
     host_header = host if parsed.port is None else f"{host}:{parsed.port}"
 
-    last_exc: "RequestsConnectionError | None" = None
+    last_exc: RequestsConnectionError | None = None
     for ip in validated_ips:
         pinned_url = urlunparse(parsed._replace(netloc=_pinned_netloc(ip, parsed.port)))
         session = requests.Session()

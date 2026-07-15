@@ -113,33 +113,33 @@ def test_parse_value_preserves_python_none_in_dict():
     # Regression test for https://github.com/stanfordnlp/dspy/issues/8820:
     # ChatAdapter instructs the LM to emit Python-dict syntax, so a bare None
     # must stay None and not be coerced to the string "None".
-    from typing import Any, Dict
+    from typing import Any
 
     value = '{"title": "Featured log", "revision_id": None}'
-    parsed = parse_value(value, Dict[str, Any])
+    parsed = parse_value(value, dict[str, Any])
     assert parsed == {"title": "Featured log", "revision_id": None}
     assert parsed["revision_id"] is None
 
 
 def test_parse_value_preserves_python_bools_and_none():
-    from typing import Any, Dict
+    from typing import Any
 
-    parsed = parse_value('{"ok": True, "bad": False, "x": None}', Dict[str, Any])
+    parsed = parse_value('{"ok": True, "bad": False, "x": None}', dict[str, Any])
     assert parsed == {"ok": True, "bad": False, "x": None}
 
 
 def test_parse_value_still_accepts_valid_json_null():
-    from typing import Any, Dict
+    from typing import Any
 
-    parsed = parse_value('{"a": null, "b": 1}', Dict[str, Any])
+    parsed = parse_value('{"a": null, "b": 1}', dict[str, Any])
     assert parsed == {"a": None, "b": 1}
 
 
 def test_parse_value_repairs_malformed_json():
-    from typing import Any, Dict
+    from typing import Any
 
     # Missing closing brace -> ast fails, json_repair recovers.
-    parsed = parse_value('{"a": 1, "b": 2', Dict[str, Any])
+    parsed = parse_value('{"a": 1, "b": 2', dict[str, Any])
     assert parsed == {"a": 1, "b": 2}
 
 
@@ -147,10 +147,10 @@ def test_parse_value_unhashable_python_literal_degrades_gracefully():
     # ast.literal_eval raises TypeError (not ValueError/SyntaxError) on a
     # syntactically-valid literal with an unhashable dict key; parse_value must
     # not let that raw TypeError escape (#8820 review).
-    from typing import Any, Dict
+    from typing import Any
 
     # Must not raise TypeError; falls through to json_repair's best-effort.
-    result = parse_value("{[1, 2]: 3}", Dict[str, Any])
+    result = parse_value("{[1, 2]: 3}", dict[str, Any])
     assert isinstance(result, (dict, str))
 
 

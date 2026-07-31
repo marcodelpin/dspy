@@ -782,3 +782,25 @@ def test_format_as_litellm_function_call_excludes_defaulted_args_from_required()
     assert "top_k" not in params["required"]
     # the defaulted arg is still advertised as a property
     assert "top_k" in params["properties"]
+
+
+def test_required_ignores_non_dict_arg_values():
+    """A non-dict value in `args` must not crash or be silently excluded (#9882).
+
+    `args` is a public constructor parameter typed dict[str, Any]. Only a dict can
+    carry a "default", so anything else stays required. Without the isinstance
+    guard an int raises TypeError and a str turns the check into a substring test.
+    """
+
+    def fn(a, b, c):
+        return a
+
+    tool = Tool(fn, args={"a": 5, "b": "has a default inside the text", "c": {"default": 1}})
+    call = tool.format_as_litellm_function_call()
+    required = call["function"]["parameters"]["required"]
+
+    # the int must not raise, and neither it nor the misleading string may be dropped
+    assert "a" in required
+    assert "b" in required
+    # only the genuine dict-with-default is excluded
+    assert "c" not in required

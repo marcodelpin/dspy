@@ -158,7 +158,13 @@ class Tool(Type):
                 "parameters": {
                     "type": "object",
                     "properties": self.args,
-                    "required": [k for k in self.args if "default" not in self.args[k]],
+                    # self.args values are JSON-schema dicts when _parse_function builds them,
+                    # but `args` is a public constructor parameter typed dict[str, Any]: a
+                    # non-dict value makes the membership test raise (int) or silently become a
+                    # substring test (str). Only a dict can carry a default (#9882).
+                    "required": [
+                        k for k, v in self.args.items() if not (isinstance(v, dict) and "default" in v)
+                    ],
                 },
             },
         }

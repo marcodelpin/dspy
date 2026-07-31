@@ -158,11 +158,7 @@ class Tool(Type):
                 "parameters": {
                     "type": "object",
                     "properties": self.args,
-                    # An argument with a Python default is optional; _parse_function records the
-                    # default under the arg's "default" key, so exclude those from "required" (#9882).
-                    "required": [
-                        k for k, v in self.args.items() if not (isinstance(v, dict) and "default" in v)
-                    ],
+                    "required": [k for k in self.args if "default" not in self.args[k]],
                 },
             },
         }

@@ -4,7 +4,6 @@ import mimetypes
 import os
 import warnings
 from typing import Any, Union
-from urllib.parse import urlparse
 
 import pydantic
 

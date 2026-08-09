@@ -562,9 +562,6 @@ def test_from_path_missing_file():
     with pytest.raises(ValueError, match="File not found"):
         dspy.Image.from_path("/nonexistent/image.png")
 
-    # They should be identical since PIL images are always encoded
-    assert image_no_download.url == image_with_download.url
-
 
 def test_image_format_does_not_leak_instances():
     """Regression #8891/#8848: Image.format must not pin instances in a shared cache.

@@ -5,7 +5,7 @@ import dspy
 from dspy.adapters.types.tool import Tool
 from dspy.primitives.module import Module
 from dspy.signatures.signature import ensure_signature
-from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
+from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError, format_error_for_lm
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,11 @@ class ReAct(Module):
                 logger.warning(f"Failed to parse the LM response for the next step: {_fmt_exc(err)}")
                 self._record_parse_failure(trajectory, idx, err)
                 continue
+            except ContextWindowExceededError as err:
+                logger.warning(f"Ending the trajectory: {format_error_for_lm(err, traceback_frames=5)}")
+                break
             except ValueError as err:
-                logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+                logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {format_error_for_lm(err, traceback_frames=5)}")
                 break
 
             trajectory[f"thought_{idx}"] = pred.next_thought
@@ -148,7 +151,7 @@ class ReAct(Module):
                 else:
                     trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](**pred.next_tool_args)
             except Exception as err:
-                trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {format_error_for_lm(err, traceback_frames=5)}"
 
             if pred.next_tool_name == "finish":
                 break
@@ -172,8 +175,11 @@ class ReAct(Module):
                 logger.warning(f"Failed to parse the LM response for the next step: {_fmt_exc(err)}")
                 self._record_parse_failure(trajectory, idx, err)
                 continue
+            except ContextWindowExceededError as err:
+                logger.warning(f"Ending the trajectory: {format_error_for_lm(err, traceback_frames=5)}")
+                break
             except ValueError as err:
-                logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+                logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {format_error_for_lm(err, traceback_frames=5)}")
                 break
 
             trajectory[f"thought_{idx}"] = pred.next_thought
@@ -187,7 +193,7 @@ class ReAct(Module):
                 else:
                     trajectory[f"observation_{idx}"] = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
             except Exception as err:
-                trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {format_error_for_lm(err, traceback_frames=5)}"
 
             if pred.next_tool_name == "finish":
                 break
@@ -226,28 +232,36 @@ class ReAct(Module):
             )
 
     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+        last_error = None
         for _ in range(3):
             try:
                 return module(
                     **input_args,
                     trajectory=self._format_trajectory(trajectory),
                 )
-            except ContextWindowExceededError:
+            except ContextWindowExceededError as err:
                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+                last_error = err
                 trajectory = self.truncate_trajectory(trajectory)
-        raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+        raise ContextWindowExceededError(
+            message="The context window was exceeded even after 3 attempts to truncate the trajectory."
+        ) from last_error
 
     async def _async_call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+        last_error = None
         for _ in range(3):
             try:
                 return await module.acall(
                     **input_args,
                     trajectory=self._format_trajectory(trajectory),
                 )
-            except ContextWindowExceededError:
+            except ContextWindowExceededError as err:
                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+                last_error = err
                 trajectory = self.truncate_trajectory(trajectory)
-        raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+        raise ContextWindowExceededError(
+            message="The context window was exceeded even after 3 attempts to truncate the trajectory."
+        ) from last_error
 
     def truncate_trajectory(self, trajectory):
         """Truncates the trajectory so that it fits in the context window.
@@ -257,26 +271,15 @@ class ReAct(Module):
         keys = list(trajectory.keys())
         if len(keys) <= 4:
             # Every tool call has 4 keys: thought, tool_name, tool_args, and observation.
-            raise ValueError(
-                "The trajectory is too long so your prompt exceeded the context window, but the trajectory cannot be "
-                "truncated because it only has one tool call."
+            raise ContextWindowExceededError(
+                message="The trajectory is too long so your prompt exceeded the context window, but the trajectory "
+                "cannot be truncated because it only has one tool call."
             )
 
         for key in keys[:4]:
             trajectory.pop(key)
 
         return trajectory
-
-
-def _fmt_exc(err: BaseException, *, limit: int = 5) -> str:
-    """
-    Return a one-string traceback summary.
-    * `limit` - how many stack frames to keep (from the innermost outwards).
-    """
-
-    import traceback
-
-    return "\n" + "".join(traceback.format_exception(type(err), err, err.__traceback__, limit=limit)).strip()
 
 
 """

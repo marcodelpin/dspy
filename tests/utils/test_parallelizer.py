@@ -1,5 +1,6 @@
 import threading
 import time
+from unittest import mock
 
 import pytest
 
@@ -225,3 +226,15 @@ def test_straggler_resubmit_after_shutdown_does_not_crash(monkeypatch):
     assert calls["n"] >= 3
     assert results[0] == 0
     assert results[1] == 10
+
+
+@pytest.mark.parametrize("num_threads", [1, 3])
+def test_none_returning_tasks_are_counted_as_complete(num_threads):
+    data = [1, 2, 3, 4, 5]
+    executor = ParallelExecutor(num_threads=num_threads, disable_progress_bar=True)
+
+    with mock.patch.object(executor, "_update_progress") as update_progress:
+        results = executor.execute(lambda _: None, data)
+
+    assert results == [None] * len(data)
+    assert update_progress.call_args == mock.call(mock.ANY, len(data), len(data))

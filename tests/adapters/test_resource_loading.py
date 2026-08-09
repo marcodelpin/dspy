@@ -1,4 +1,5 @@
 import base64
+import mimetypes
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -9,6 +10,15 @@ import dspy
 def _forbid_host_io(monkeypatch):
     """Make any filesystem read or outbound request fail the test."""
 
+    # `mimetypes.guess_type` reads the system mime database (/etc/mime.types) on FIRST use in a
+    # process. That is library initialisation, not a locator dereference, but `fail_open` below
+    # cannot tell them apart - so whether these tests pass depends on whether something else
+    # initialised mimetypes first, i.e. on test ordering. Force it here and the outcome is
+    # deterministic in isolation as well as in a full run. (Verified: with mimetypes pre-inited
+    # all 14 no_host_io cases pass; the call site is identical in upstream audio.py, so this is
+    # not a fork divergence.)
+    mimetypes.init()
+
     def fail_open(*args, **kwargs):
         pytest.fail("resource handling attempted a filesystem read")
 
@@ -16,8 +26,14 @@ def _forbid_host_io(monkeypatch):
         pytest.fail("resource handling attempted a network request")
 
     monkeypatch.setattr("builtins.open", fail_open)
-    monkeypatch.setattr("dspy.adapters.types.image.requests.get", fail_request)
-    monkeypatch.setattr("dspy.adapters.types.audio.requests.get", fail_request)
+    # FORK SEAM: upstream patches `<module>.requests.get` because upstream's image/audio call
+    # requests directly. This fork routes both through `download_bytes` (_http_download), which
+    # enforces the SSRF guard, the IP pin, the redirect cap and the body/deadline limits, so
+    # `requests` is not a module attribute here and that target would raise ImportError.
+    # `download_bytes` is the ONLY network seam in either module - verified: they contain no
+    # other requests/urlopen/httpx call site. Keep this target when merging upstream.
+    monkeypatch.setattr("dspy.adapters.types.image.download_bytes", fail_request)
+    monkeypatch.setattr("dspy.adapters.types.audio.download_bytes", fail_request)
 
 
 # Locator-shaped inputs an attacker could supply. Neither construction nor the validation/parse
@@ -60,7 +76,7 @@ def test_image_url_constructor_does_not_download(monkeypatch):
     def fail_request(*args, **kwargs):
         pytest.fail("Image construction attempted to download a remote resource")
 
-    monkeypatch.setattr("dspy.adapters.types.image.requests.get", fail_request)
+    monkeypatch.setattr("dspy.adapters.types.image.download_bytes", fail_request)
 
     image = dspy.Image("https://example.com/image.png")
 
@@ -89,7 +105,7 @@ def test_image_positional_download_compatibility_shim(monkeypatch):
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr("dspy.adapters.types.image.requests.get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("dspy.adapters.types.image.download_bytes", lambda *args, **kwargs: Response())
 
     with pytest.warns(DeprecationWarning, match="download.*deprecated"):
         image = dspy.Image("https://example.com/image.png", download=True)
@@ -133,7 +149,7 @@ def test_explicit_remote_resource_factories(monkeypatch, factory, mime_type):
             return None
 
     module = "image" if factory == dspy.Image.from_url else "audio"
-    monkeypatch.setattr(f"dspy.adapters.types.{module}.requests.get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(f"dspy.adapters.types.{module}.download_bytes", lambda *args, **kwargs: Response())
 
     resource = factory(f"https://example.com/resource.{mime_type.split('/', 1)[1]}")
     encoded = resource.url.split(",", 1)[1] if isinstance(resource, dspy.Image) else resource.data
@@ -195,7 +211,7 @@ def test_audio_from_url_passes_verify(monkeypatch):
         captured.update(kwargs)
         return Response()
 
-    monkeypatch.setattr("dspy.adapters.types.audio.requests.get", fake_get)
+    monkeypatch.setattr("dspy.adapters.types.audio.download_bytes", fake_get)
 
     dspy.Audio.from_url("https://example.com/a.wav", verify=False)
 

@@ -485,7 +485,7 @@ def test_canonical_factories_do_not_warn(tmp_path):
     with pytest.MonkeyPatch.context() as monkeypatch:
         response = type("Response", (), {"content": b"pngdata", "headers": {"Content-Type": "image/png"}})()
         response.raise_for_status = lambda: None
-        monkeypatch.setattr("dspy.adapters.types.image.requests.get", lambda *args, **kwargs: response)
+        monkeypatch.setattr("dspy.adapters.types.image.download_bytes", lambda *args, **kwargs: response)
         dspy.Image.from_url("https://example.com/dog.jpg")
 
     with warnings.catch_warnings():
@@ -528,7 +528,7 @@ def test_positional_local_path_hard_breaks(tmp_path, monkeypatch):
 def test_deprecated_download_true_downloads(monkeypatch):
     response = type("Response", (), {"content": b"pngdata", "headers": {"Content-Type": "image/png"}})()
     response.raise_for_status = lambda: None
-    monkeypatch.setattr("dspy.adapters.types.image.requests.get", lambda *args, **kwargs: response)
+    monkeypatch.setattr("dspy.adapters.types.image.download_bytes", lambda *args, **kwargs: response)
 
     with pytest.warns(DeprecationWarning, match="`download` and `verify`"):
         image = dspy.Image("https://example.com/dog.jpg", download=True)

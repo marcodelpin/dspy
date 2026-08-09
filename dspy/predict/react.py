@@ -127,7 +127,10 @@ class ReAct(Module):
             try:
                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
             except AdapterParseError as err:
-                logger.warning(f"Failed to parse the LM response for the next step: {_fmt_exc(err)}")
+                logger.warning(
+                    f"Failed to parse the LM response for the next step: "
+                    f"{format_error_for_lm(err, traceback_frames=5)}"
+                )
                 self._record_parse_failure(trajectory, idx, err)
                 continue
             except ContextWindowExceededError as err:
@@ -172,7 +175,10 @@ class ReAct(Module):
             try:
                 pred = await self._async_call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
             except AdapterParseError as err:
-                logger.warning(f"Failed to parse the LM response for the next step: {_fmt_exc(err)}")
+                logger.warning(
+                    f"Failed to parse the LM response for the next step: "
+                    f"{format_error_for_lm(err, traceback_frames=5)}"
+                )
                 self._record_parse_failure(trajectory, idx, err)
                 continue
             except ContextWindowExceededError as err:
@@ -217,7 +223,10 @@ class ReAct(Module):
         try:
             return self._call_with_potential_trajectory_truncation(module, trajectory, **input_args)
         except AdapterParseError as err:
-            logger.warning(f"Failed to parse the LM response for the extraction step, retrying once: {_fmt_exc(err)}")
+            logger.warning(
+                f"Failed to parse the LM response for the extraction step, retrying once: "
+                f"{format_error_for_lm(err, traceback_frames=5)}"
+            )
             return self._call_with_potential_trajectory_truncation(
                 module, self._extract_retry_trajectory(trajectory, err), **input_args
             )
@@ -226,7 +235,10 @@ class ReAct(Module):
         try:
             return await self._async_call_with_potential_trajectory_truncation(module, trajectory, **input_args)
         except AdapterParseError as err:
-            logger.warning(f"Failed to parse the LM response for the extraction step, retrying once: {_fmt_exc(err)}")
+            logger.warning(
+                f"Failed to parse the LM response for the extraction step, retrying once: "
+                f"{format_error_for_lm(err, traceback_frames=5)}"
+            )
             return await self._async_call_with_potential_trajectory_truncation(
                 module, self._extract_retry_trajectory(trajectory, err), **input_args
             )

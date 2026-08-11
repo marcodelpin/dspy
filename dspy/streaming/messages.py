@@ -123,7 +123,7 @@ class StatusStreamingCallback(BaseCallback):
         self,
         call_id: str,
         outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
+        exception: BaseException | None = None,
     ):
         stream = settings.send_stream
         if stream is None or outputs == "Completed.":
@@ -151,7 +151,7 @@ class StatusStreamingCallback(BaseCallback):
         self,
         call_id: str,
         outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
+        exception: BaseException | None = None,
     ):
         stream = settings.send_stream
         if stream is None:
@@ -179,7 +179,7 @@ class StatusStreamingCallback(BaseCallback):
         self,
         call_id: str,
         outputs: dict[str, Any] | None,
-        exception: Exception | None = None,
+        exception: BaseException | None = None,
     ):
         stream = settings.send_stream
         if stream is None:

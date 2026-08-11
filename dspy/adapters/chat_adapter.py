@@ -7,6 +7,7 @@ from pydantic.fields import FieldInfo
 from dspy.adapters.base import Adapter
 from dspy.adapters.types.tool import ToolCalls
 from dspy.adapters.utils import (
+    apply_output_field_defaults,
     format_field_value,
     get_annotation_name,
     get_field_description_string,
@@ -281,6 +282,10 @@ class ChatAdapter(Adapter):
         fields, error = self._build_fields(signature, completion, self._parse_sections_line_start(completion))
         if error is not None:
             raise error
+        # Optional output fields (a default, a default factory, or a None-admitting
+        # annotation) are filled in signature order before completeness is judged,
+        # so a response that legitimately omits them is complete (#10148).
+        fields = apply_output_field_defaults(signature, fields)
         if fields.keys() == signature.output_fields.keys():
             return fields
 
@@ -311,6 +316,7 @@ class ChatAdapter(Adapter):
         fields, error = self._build_fields(signature, completion, self._parse_sections_anywhere(completion))
         if error is not None:
             raise error
+        fields = apply_output_field_defaults(signature, fields)
         if fields.keys() != signature.output_fields.keys():
             raise missing_fields_error
 

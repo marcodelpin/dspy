@@ -1941,3 +1941,18 @@ def test_json_adapter_fallback_extracts_object_after_prose():
     adapter = dspy.JSONAdapter()
     completion = 'Sure! Here is the answer:\n[note]\n{"answer": "42"}'
     assert adapter.parse(MySignature, completion) == {"answer": "42"}
+def test_missing_optional_output_fields_fall_back_to_defaults():
+    from dspy.utils.exceptions import AdapterParseError
+
+    class OptionalOutputSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+        note: str | None = dspy.OutputField(default="No note")
+        maybe: str | None = dspy.OutputField()
+
+    adapter = dspy.JSONAdapter()
+    parsed = adapter.parse(OptionalOutputSignature, '{"answer": "42"}')
+    assert parsed == {"answer": "42", "note": "No note", "maybe": None}
+
+    with pytest.raises(AdapterParseError):
+        adapter.parse(OptionalOutputSignature, '{"note": "present"}')

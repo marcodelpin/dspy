@@ -156,6 +156,43 @@ def test_explicit_remote_resource_factories(monkeypatch, factory, mime_type):
     assert base64.b64decode(encoded) == b"remote bytes"
 
 
+@pytest.mark.parametrize(
+    ("factory", "module", "mime_type"),
+    [(dspy.Image.from_url, "image", "image/png"), (dspy.Audio.from_url, "audio", "audio/wav")],
+)
+def test_from_url_applies_a_timeout_by_default(monkeypatch, factory, module, mime_type):
+    # Upstream (#10149) asserts this by monkeypatching `requests.get` inside the module. This fork
+    # routes both modules through `download_bytes` (_http_download) instead, so `requests` is not
+    # imported there at all and that seam does not exist. The property under test is the same one:
+    # the caller's `timeout` reaches the fetch, defaulting to 30.0. Note the fork is STRICTLY
+    # stronger for `timeout=None`: upstream disables the timeout and can hang forever, while
+    # `download_bytes` still enforces its total wall-clock deadline.
+    seen = {}
+
+    class Response:
+        def __init__(self):
+            self.content = b"remote bytes"
+            self.headers = {"Content-Type": mime_type}
+
+        def raise_for_status(self):
+            return None
+
+    def record_request(url, **kwargs):
+        seen.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(f"dspy.adapters.types.{module}.download_bytes", record_request)
+
+    factory("https://example.com/resource")
+    assert seen.get("timeout") == 30.0
+
+    factory("https://example.com/resource", timeout=5.0)
+    assert seen.get("timeout") == 5.0
+
+    factory("https://example.com/resource", timeout=None)
+    assert seen.get("timeout") is None
+
+
 def test_in_memory_resource_construction():
     image = dspy.Image(
         base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")

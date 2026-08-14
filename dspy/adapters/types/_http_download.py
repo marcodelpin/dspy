@@ -261,13 +261,22 @@ def _pinned_get(
     raise last_exc  # every validated IP refused the connection
 
 
-def download_bytes(url: str, *, verify: bool = True) -> requests.Response:
+def download_bytes(
+    url: str, *, verify: bool = True, timeout: float | None = None
+) -> requests.Response:
     """Fetch ``url`` and return the completed :class:`requests.Response` (with ``.content`` and
     ``.headers`` populated), enforcing the SSRF guard + IP pin on every hop and the total
     deadline + size cap on the body.
 
     ``verify`` is forwarded to requests for TLS certificate verification.
+
+    ``timeout`` is the caller's per-read (inactivity) budget in seconds; ``None`` uses the module
+    default. It can only make the read stricter than the total deadline, never looser: a caller
+    passing a large value (or ``None``) still cannot hold the connection past ``_TOTAL_DEADLINE``.
+    This is the divergence from upstream's ``requests.get(timeout=...)``, where ``timeout=None``
+    disables the timeout entirely and can hang indefinitely.
     """
+    read_budget = _READ_TIMEOUT if timeout is None else timeout
     deadline = time.monotonic() + _TOTAL_DEADLINE
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
@@ -276,7 +285,7 @@ def download_bytes(url: str, *, verify: bool = True) -> requests.Response:
         if remaining <= 0:
             raise UnsafeURLError(f"Download exceeded the total deadline of {_TOTAL_DEADLINE}s")
 
-        read_timeout = max(1.0, min(_READ_TIMEOUT, remaining))
+        read_timeout = max(1.0, min(read_budget, remaining))
         resp, close_transport = _pinned_get(
             current, validated_ips, verify=verify, timeout=(read_timeout, read_timeout)
         )

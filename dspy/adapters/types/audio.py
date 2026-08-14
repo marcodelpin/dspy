@@ -79,7 +79,7 @@ class Audio(Type):
         return encode_audio(values)
 
     @classmethod
-    def from_url(cls, url: str, *, verify: bool = True) -> "Audio":
+    def from_url(cls, url: str, verify: bool = True, timeout: float | None = 30.0) -> "Audio":
         """
         Download an audio file from a URL and encode it as base64.
 
@@ -88,8 +88,15 @@ class Audio(Type):
         slow/oversized response (per-read timeout + total deadline + size cap). This is the
         explicit, opt-in download path: implicit coercion of a URL string into an ``Audio`` field
         does NOT auto-download.
+
+        Args:
+            url: The URL of the audio to download.
+            verify: Whether to verify SSL certificates. Set to False for self-signed certs.
+            timeout: Per-read (inactivity) timeout in seconds. ``None`` falls back to the
+                helper's default per-read timeout; unlike upstream it cannot hang indefinitely,
+                because the total wall-clock deadline enforced by ``download_bytes`` still applies.
         """
-        response = download_bytes(url, verify=verify)
+        response = download_bytes(url, verify=verify, timeout=timeout)
         mime_type = response.headers.get("Content-Type", "audio/wav")
         if not mime_type.startswith("audio/"):
             raise ValueError(f"Unsupported MIME type for audio: {mime_type}")

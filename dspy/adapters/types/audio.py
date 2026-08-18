@@ -209,6 +209,18 @@ def encode_audio(audio: Union[str, bytes, dict, "Audio", Any], sampling_rate: in
             "on untrusted input). Call Audio.from_url(url) to download explicitly (with SSRF + "
             "timeout + size guards), or pass a data URI, a local file path, or raw bytes."
         )
+    elif isinstance(audio, str):
+        # Last of the string branches on purpose. The two above carry the fork's own
+        # behaviour (load an existing local path, refuse to auto-download a URL); this one
+        # restores upstream's guidance for every other string shape, of which a bare
+        # filename that does not exist on this host is the common case. Without it that
+        # shape fell through to the generic "Unsupported type for encode_audio" raise at
+        # the end of the chain, which upstream's own
+        # test_audio_positional_string_must_be_data_uri_even_with_format asserts against.
+        raise ValueError(
+            "String audio inputs must be data URIs. "
+            "Load local files with Audio.from_path() and remote resources with Audio.from_url()."
+        )
     elif SF_AVAILABLE and hasattr(audio, "shape"):
         a = Audio.from_array(audio, sampling_rate=sampling_rate, format=format)
         return {"data": a.data, "audio_format": a.audio_format}

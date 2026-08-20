@@ -341,18 +341,18 @@ async def test_codeact_async_code_generation():
             {"reasoning": "Reason_B", "answer": "2"},
         ]
     )
-    dspy.configure(lm=lm)
-    factory = MockInterpreterFactory(responses=["", "2\n"])
-    program = CodeAct(BasicQA, tools=[add], interpreter_factory=factory)
-    res = await program.acall(question="What is 1+1?")
-    assert res.answer == "2"
-    # The async path must build the same trajectory shape as forward(): one iteration with the
-    # generated code and its captured output (exact stdout serialization is an interpreter detail).
-    assert set(res.trajectory.keys()) == {"generated_code_0", "code_output_0"}
-    assert res.trajectory["generated_code_0"] == "result = add(1,1)\nprint(result)"
-    assert "2" in res.trajectory["code_output_0"]
-    # The async path manages the factory-created interpreter like forward(): one fresh
-    # instance, shut down afterwards.
-    assert len(factory.instances) == 1
-    with pytest.raises(CodeInterpreterError, match="shutdown"):
-        factory.instances[0].execute("print('closed')")
+    with dspy.context(lm=lm):
+        factory = MockInterpreterFactory(responses=["", "2\n"])
+        program = CodeAct(BasicQA, tools=[add], interpreter_factory=factory)
+        res = await program.acall(question="What is 1+1?")
+        assert res.answer == "2"
+        # The async path must build the same trajectory shape as forward(): one iteration with the
+        # generated code and its captured output (exact stdout serialization is an interpreter detail).
+        assert set(res.trajectory.keys()) == {"generated_code_0", "code_output_0"}
+        assert res.trajectory["generated_code_0"] == "result = add(1,1)\nprint(result)"
+        assert "2" in res.trajectory["code_output_0"]
+        # The async path manages the factory-created interpreter like forward(): one fresh
+        # instance, shut down afterwards.
+        assert len(factory.instances) == 1
+        with pytest.raises(CodeInterpreterError, match="shutdown"):
+            factory.instances[0].execute("print('closed')")

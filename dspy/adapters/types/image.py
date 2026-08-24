@@ -119,11 +119,18 @@ class Image(Type):
     def from_url(cls, url: str, verify: bool = True, timeout: float | None = 30.0) -> "Image":
         """Download an HTTP(S) resource and encode it as a data URI.
 
-        Security: this performs an explicit, caller-initiated fetch and applies no
-        SSRF protection beyond requiring an HTTP(S) scheme. Like ``requests.get``, it
-        will reach private, loopback, or cloud-metadata hosts and follow redirects to
-        them. When ``url`` is derived from untrusted input, the caller is responsible
-        for validating the host against an allowlist before calling this method.
+        The fetch is guarded against SSRF (the host must resolve to a public address; private,
+        loopback, link-local, reserved and cloud-metadata targets are refused) and against a
+        slow/oversized response (per-read timeout + total deadline + size cap). This is the
+        explicit, opt-in download path: implicit coercion of a URL string into an ``Image``
+        field does NOT auto-download.
+
+        Args:
+            url: The URL of the image to download.
+            verify: Whether to verify SSL certificates. Set to False for self-signed certs.
+            timeout: Per-read (inactivity) timeout in seconds. ``None`` falls back to the
+                helper's default per-read timeout; unlike upstream it cannot hang indefinitely,
+                because the total wall-clock deadline enforced by ``download_bytes`` still applies.
         """
         if not _is_http_url(url):
             raise ValueError(f"Image.from_url requires an HTTP(S) URL, received: {url}")

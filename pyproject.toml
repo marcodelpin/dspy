@@ -25,11 +25,7 @@ dependencies = [
     "regex>=2023.10.3",
     "orjson>=3.9.0",
     "tqdm>=4.66.1",
-<<<<<<< HEAD
     "requests>=2.32.3",
-=======
-    "requests>=2.31.0",
->>>>>>> github-origin/main
     "pydantic>=2.11.0",
     "litellm>=1.65.8",
     "diskcache>=5.6.0",

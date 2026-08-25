@@ -214,6 +214,19 @@ def test_audio_positional_string_must_be_data_uri_even_with_format(source, match
         dspy.Audio(source, audio_format="wav")
 
 
+def test_audio_implicit_coercion_does_not_read_an_existing_local_file(tmp_path):
+    # dspy-8bf: encode_audio's implicit-coercion path is reachable from untrusted input (an LM
+    # output, a tool result, a retrieved-document field). Unlike /etc/passwd in
+    # test_construction_performs_no_host_io (rejected on FORMAT, before any read), a real
+    # existing .wav file must be rejected WITHOUT its bytes ever being read - the same SSRF/DoS
+    # reasoning the sibling http branch already applies to remote URLs.
+    audio_path = tmp_path / "legit.wav"
+    audio_path.write_bytes(b"real audio bytes that must never be read implicitly")
+
+    with pytest.raises(ValueError, match=r"Audio\.from_path"):
+        dspy.Audio(str(audio_path))
+
+
 @pytest.mark.parametrize(
     "source",
     [

@@ -196,9 +196,6 @@ def encode_audio(audio: Union[str, bytes, dict, "Audio", Any], sampling_rate: in
             return {"data": b64data, "audio_format": audio_format}
         except Exception as e:
             raise ValueError(f"Malformed audio data URI: {e}")
-    elif isinstance(audio, str) and os.path.isfile(audio):
-        a = Audio.from_file(audio)
-        return {"data": a.data, "audio_format": a.audio_format}
     elif isinstance(audio, str) and audio.startswith("http"):
         # Do NOT auto-download here. This branch runs during implicit coercion of an arbitrary
         # string (a tool result, a retrieved-document field, a model output) into an Audio field,
@@ -207,16 +204,16 @@ def encode_audio(audio: Union[str, bytes, dict, "Audio", Any], sampling_rate: in
         raise ValueError(
             "Refusing to auto-download audio from a URL during implicit coercion (SSRF/DoS risk "
             "on untrusted input). Call Audio.from_url(url) to download explicitly (with SSRF + "
-            "timeout + size guards), or pass a data URI, a local file path, or raw bytes."
+            "timeout + size guards), or pass a data URI or raw bytes."
         )
     elif isinstance(audio, str):
-        # Last of the string branches on purpose. The two above carry the fork's own
-        # behaviour (load an existing local path, refuse to auto-download a URL); this one
-        # restores upstream's guidance for every other string shape, of which a bare
-        # filename that does not exist on this host is the common case. Without it that
-        # shape fell through to the generic "Unsupported type for encode_audio" raise at
-        # the end of the chain, which upstream's own
-        # test_audio_positional_string_must_be_data_uri_even_with_format asserts against.
+        # Last of the string branches on purpose. The one above carries the fork's own
+        # behaviour (refuse to auto-download a URL); this one restores upstream's guidance for
+        # every other string shape, including an existing local file path. Implicit coercion is
+        # reachable from untrusted input (a tool result, a retrieved-document field, a model
+        # output), so silently reading a file it happens to name would be the same SSRF/DoS
+        # surface as the http branch above, pointed at the filesystem instead of the network
+        # (dspy-8bf). Load a local path explicitly via Audio.from_path() instead.
         raise ValueError(
             "String audio inputs must be data URIs. "
             "Load local files with Audio.from_path() and remote resources with Audio.from_url()."

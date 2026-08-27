@@ -287,3 +287,27 @@ def test_pot_parse_code_detects_syntax_error():
     assert error is not None
     assert "Syntax error" in error
     assert "line" in error.lower()
+
+
+def test_pot_parse_code_appends_echo_for_single_line_assignment():
+    """_parse_code appends a trailing bare-name echo of the last assigned variable so the
+    interpreter's last-expression value is captured as output. This must also apply when
+    the generated code is a single line, not just when it's the last of several lines --
+    a bare `answer = 42` is a common, simple case an LM can legitimately generate."""
+    pot = ProgramOfThought(BasicQA)
+
+    code_block, error = pot._parse_code({"generated_code": "answer = 42"})
+
+    assert error is None
+    assert code_block == "answer = 42\nanswer"
+
+
+def test_pot_parse_code_multiline_assignment_still_appends_echo():
+    """Regression guard: the multi-line case (already covered before this fix) must keep
+    working the same way."""
+    pot = ProgramOfThought(BasicQA)
+
+    code_block, error = pot._parse_code({"generated_code": "x = 1\nanswer = x + 41"})
+
+    assert error is None
+    assert code_block == "x = 1\nanswer = x + 41\nanswer"

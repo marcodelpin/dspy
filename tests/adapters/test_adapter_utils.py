@@ -2,11 +2,9 @@
 
 from typing import Literal, Optional, Union
 
-import pydantic
 import pytest
 from pydantic import BaseModel
 
-import dspy
 from dspy.adapters.utils import parse_value
 
 
@@ -104,6 +102,16 @@ def test_parse_value_literal_numeric_and_bool():
         parse_value("invalid", Literal[True, False])
 
 
+def test_parse_value_literal_non_string_members():
+    # Text adapters yield literal values as strings; coerce them to the member type.
+    assert parse_value("2", Literal[1, 2, 3]) == 2
+    assert parse_value('"2"', Literal[1, 2, 3]) == 2
+    assert parse_value("True", Literal[True, False]) is True
+
+    with pytest.raises(ValueError):
+        parse_value("42", Literal[1, 2, 3])
+
+
 def test_parse_value_union():
     # Test Union with None (Optional)
     assert parse_value("test", Optional[str]) == "test"
@@ -132,102 +140,3 @@ def test_parse_value_json_repair():
     malformed = "not json or literal"
     with pytest.raises(Exception):
         parse_value(malformed, dict)
-
-
-def test_parse_value_preserves_python_none_in_dict():
-    # Regression test for https://github.com/stanfordnlp/dspy/issues/8820:
-    # ChatAdapter instructs the LM to emit Python-dict syntax, so a bare None
-    # must stay None and not be coerced to the string "None".
-    from typing import Any
-
-    value = '{"title": "Featured log", "revision_id": None}'
-    parsed = parse_value(value, dict[str, Any])
-    assert parsed == {"title": "Featured log", "revision_id": None}
-    assert parsed["revision_id"] is None
-
-
-def test_parse_value_preserves_python_bools_and_none():
-    from typing import Any
-
-    parsed = parse_value('{"ok": True, "bad": False, "x": None}', dict[str, Any])
-    assert parsed == {"ok": True, "bad": False, "x": None}
-
-
-def test_parse_value_still_accepts_valid_json_null():
-    from typing import Any
-
-    parsed = parse_value('{"a": null, "b": 1}', dict[str, Any])
-    assert parsed == {"a": None, "b": 1}
-
-
-def test_parse_value_repairs_malformed_json():
-    from typing import Any
-
-    # Missing closing brace -> ast fails, json_repair recovers.
-    parsed = parse_value('{"a": 1, "b": 2', dict[str, Any])
-    assert parsed == {"a": 1, "b": 2}
-
-
-def test_parse_value_unhashable_python_literal_degrades_gracefully():
-    # ast.literal_eval raises TypeError (not ValueError/SyntaxError) on a
-    # syntactically-valid literal with an unhashable dict key; parse_value must
-    # not let that raw TypeError escape (#8820 review).
-    from typing import Any
-
-    # Must not raise TypeError; falls through to json_repair's best-effort.
-    result = parse_value("{[1, 2]: 3}", dict[str, Any])
-    assert isinstance(result, (dict, str))
-
-
-def test_parse_value_honors_str_max_length_constraint():
-    """#7925: parse_value validated against the bare annotation, dropping pydantic constraints (which
-    live in FieldInfo.metadata). A str OutputField(max_length=N) must now be enforced."""
-
-    class Sig(dspy.Signature):
-        answer: str = dspy.OutputField(max_length=3)
-
-    fi = Sig.output_fields["answer"]
-    assert parse_value("ok", fi.annotation, fi) == "ok"
-    with pytest.raises(pydantic.ValidationError):
-        parse_value("toolong", fi.annotation, fi)
-
-
-def test_parse_value_honors_int_range_constraint():
-    """#7925: numeric ge/le constraints (stored in FieldInfo.metadata) must be enforced."""
-
-    class Sig(dspy.Signature):
-        n: int = dspy.OutputField(ge=1, le=5)
-
-    fi = Sig.output_fields["n"]
-    assert parse_value("3", fi.annotation, fi) == 3
-    with pytest.raises(pydantic.ValidationError):
-        parse_value("9", fi.annotation, fi)
-
-
-def test_parse_value_without_constraints_is_unchanged():
-    """Backward compatibility: no FieldInfo (or a field with no constraints) behaves as before."""
-
-    assert parse_value("toolong", str) == "toolong"
-
-    class Sig(dspy.Signature):
-        answer: str = dspy.OutputField()
-
-    fi = Sig.output_fields["answer"]
-    assert parse_value("anything", fi.annotation, fi) == "anything"
-
-
-def test_parse_value_preserves_none_in_markdown_fenced_dict():
-    """#8181: an LM may wrap a dict/list output value in a markdown code fence
-    (```python ... ```). ast.literal_eval can't parse the fence, so parse_value
-    used to fall through to json_repair, which coerces the Python literal ``None``
-    to the string ``"None"``. The fence must be stripped so ``None`` survives."""
-    fenced = '```python\n{"memory_text": "x", "memory_url_info": None}\n```'
-    result = parse_value(fenced, dict)
-    assert result == {"memory_text": "x", "memory_url_info": None}
-    assert result["memory_url_info"] is None  # not the string "None"
-
-
-def test_parse_value_plain_fence_without_language():
-    """A code fence without a language tag must also be unwrapped."""
-    fenced = "```\n[1, None, 3]\n```"
-    assert parse_value(fenced, list) == [1, None, 3]

@@ -17,9 +17,10 @@ from dspy.adapters.utils import (
     translate_field_type,
 )
 from dspy.clients.base_lm import BaseLM
+from dspy.clients.capabilities import with_capability_planning
 from dspy.signatures.signature import Signature, SignatureMeta
 from dspy.utils.callback import BaseCallback
-from dspy.utils.exceptions import AdapterParseError, LMError
+from dspy.utils.exceptions import AdapterParseError
 
 logger = logging.getLogger(__name__)
 
@@ -83,19 +84,27 @@ class JSONAdapter(ChatAdapter):
             parallel_tool_calls=parallel_tool_calls,
         )
 
-    def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):
-        """Common call logic to be used for both sync and async calls."""
+    def _prepare_response_format(self, lm, lm_kwargs, signature):
+        """Choose a format before execution; schema fallback never encloses an LM call."""
         if "response_format" not in lm.supported_params:
-            return call_fn(lm, lm_kwargs, signature, demos, inputs)
-
+            return
         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())
 
         if (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:
             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.
             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.
             lm_kwargs["response_format"] = {"type": "json_object"}
-            return call_fn(lm, lm_kwargs, signature, demos, inputs)
+            return
+        try:
+            format_ = _get_structured_outputs_response_format(signature, self.use_native_function_calling)
+        except _OpenEndedMappingError:
+            format_ = {"type": "json_object"}
+        except (ValueError, pydantic.PydanticInvalidForJsonSchema, pydantic.PydanticSchemaGenerationError):
+            logger.warning("Failed to build structured output schema; using JSON mode before execution.")
+            format_ = {"type": "json_object"}
+        lm_kwargs["response_format"] = format_
 
+    @with_capability_planning
     def __call__(
         self,
         lm: BaseLM,
@@ -104,28 +113,10 @@ class JSONAdapter(ChatAdapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)
-        if result:
-            return result
+        self._prepare_response_format(lm, lm_kwargs, signature)
+        return super().__call__(lm, lm_kwargs, signature, demos, inputs)
 
-        try:
-            structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
-            )
-            lm_kwargs["response_format"] = structured_output_model
-            return super().__call__(lm, lm_kwargs, signature, demos, inputs)
-        except _OpenEndedMappingError:
-            lm_kwargs["response_format"] = {"type": "json_object"}
-            return super().__call__(lm, lm_kwargs, signature, demos, inputs)
-        except LMError:
-            # Provider/backend failures should propagate; the fallback below is only for local structured-output
-            # setup/schema failures where retrying in JSON mode is appropriate.
-            raise
-        except Exception:
-            logger.warning("Failed to use structured output format, falling back to JSON mode.")
-            lm_kwargs["response_format"] = {"type": "json_object"}
-            return super().__call__(lm, lm_kwargs, signature, demos, inputs)
-
+    @with_capability_planning
     async def acall(
         self,
         lm: BaseLM,
@@ -134,27 +125,8 @@ class JSONAdapter(ChatAdapter):
         demos: list[dict[str, Any]],
         inputs: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().acall)
-        if result:
-            return await result
-
-        try:
-            structured_output_model = _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
-            )
-            lm_kwargs["response_format"] = structured_output_model
-            return await super().acall(lm, lm_kwargs, signature, demos, inputs)
-        except _OpenEndedMappingError:
-            lm_kwargs["response_format"] = {"type": "json_object"}
-            return await super().acall(lm, lm_kwargs, signature, demos, inputs)
-        except LMError:
-            # Provider/backend failures should propagate; the fallback below is only for local structured-output
-            # setup/schema failures where retrying in JSON mode is appropriate.
-            raise
-        except Exception:
-            logger.warning("Failed to use structured output format, falling back to JSON mode.")
-            lm_kwargs["response_format"] = {"type": "json_object"}
-            return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+        self._prepare_response_format(lm, lm_kwargs, signature)
+        return await super().acall(lm, lm_kwargs, signature, demos, inputs)
 
     def format_field_structure(self, signature: type[Signature]) -> str:
         parts = []
@@ -240,14 +212,12 @@ class JSONAdapter(ChatAdapter):
         for k, v in fields.items():
             if k in signature.output_fields:
                 try:
-                    fields[k] = parse_value(v, signature.output_fields[k].annotation, signature.output_fields[k])
-                except Exception as e:
+                    fields[k] = parse_value(v, signature.output_fields[k].annotation)
+                except ValueError as exc:
                     raise AdapterParseError(
-                        adapter_name="JSONAdapter",
-                        signature=signature,
-                        lm_response=completion,
-                        message=f"Failed to parse field {k} with value {v} from the LM response. Error message: {e}",
-                    )
+                        adapter_name=type(self).__name__, signature=signature, lm_response=completion,
+                        message=f"Failed to parse field {k}: {exc}", parsed_result=fields,
+                    ) from exc
 
         fields = apply_output_field_defaults(signature, fields)
         if fields.keys() != signature.output_fields.keys():

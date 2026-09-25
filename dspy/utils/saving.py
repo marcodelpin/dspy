@@ -29,7 +29,8 @@ def _sanitize_program_lm_config(config: dict) -> dict:
 
 
 def _reduce_program_lm(lm):
-    state = lm.__dict__.copy()
+    # __getstate__ drops the engine lock/store (not picklable); __dict__ would carry them.
+    state = lm.__getstate__()
     state["history"] = []
     state["kwargs"] = _sanitize_program_lm_config(state.get("kwargs") or {})
     return copyreg.__newobj__, (type(lm),), state

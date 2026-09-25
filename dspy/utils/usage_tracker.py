@@ -32,11 +32,13 @@ class UsageTracker:
                 result[key] = value
         return result
 
-    def _is_summable(self, value: Any) -> bool:
-        """Return True for values that should be numerically summed when merging entries.
+    @staticmethod
+    def _is_summable(value: Any) -> bool:
+        """Whether a usage value is a count that can be added across entries.
 
-        bool is excluded despite being an int subclass: tallying `is_byok=True` twice
-        would yield 2 instead of True, which is wrong.
+        `bool` is excluded even though it is an `int` subclass: providers report flags
+        (such as OpenRouter's `is_byok`) alongside token counts, and summing those would
+        turn a flag into a meaningless tally.
         """
         return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -44,35 +46,29 @@ class UsageTracker:
         self, usage_entry1: dict[str, Any] | None, usage_entry2: dict[str, Any] | None
     ) -> dict[str, Any]:
         if usage_entry1 is None or len(usage_entry1) == 0:
-            return dict(usage_entry2)
+            return dict(usage_entry2 or {})
         if usage_entry2 is None or len(usage_entry2) == 0:
-            return dict(usage_entry1)
+            return dict(usage_entry1 or {})
 
-        result = dict(usage_entry2)
-        for k, v in usage_entry1.items():
+        result = dict(usage_entry1)
+        for k, v in usage_entry2.items():
             current_v = result.get(k)
             if isinstance(v, dict) or isinstance(current_v, dict):
                 result[k] = self._merge_usage_entries(current_v, v)
-            elif self._is_summable(v) or self._is_summable(current_v):
-                result[k] = (current_v or 0) + (v or 0)
-            # else: non-summable (str, bool, …) — usage_entry2's value already in result; leave it.
+            elif current_v is None:
+                if v is not None:
+                    result[k] = v
+            elif self._is_summable(current_v) and self._is_summable(v):
+                result[k] = current_v + v
+            # Otherwise keep `current_v` as-is. `usage` is not guaranteed to hold only
+            # counts: both litellm's `Usage` and dspy's `LMUsage` allow extra fields, so
+            # whatever a provider reports flows through verbatim.
         return result
 
     def add_usage(self, lm: str, usage_entry: dict[str, Any]) -> None:
         """Add a usage entry to the tracker."""
         if len(usage_entry) > 0:
             self.usage_data[lm].append(self._flatten_usage_entry(usage_entry))
-
-    def merge(self, other: "UsageTracker") -> None:
-        """Absorb every usage entry recorded by `other` into this tracker.
-
-        Entries stored on a tracker are already flattened by `_flatten_usage_entry`,
-        so they can be appended directly without going through `add_usage` (which would
-        re-flatten them and re-apply the `len > 0` guard unnecessarily).
-        Used to roll a nested `track_usage()` scope up into its parent.
-        """
-        for lm, usage_entries in other.usage_data.items():
-            self.usage_data[lm].extend(usage_entries)
 
     def get_total_tokens(self) -> dict[str, dict[str, Any]]:
         """Calculate total tokens from all tracked usage."""
@@ -89,17 +85,16 @@ class UsageTracker:
 def track_usage() -> Generator[UsageTracker, None, None]:
     """Context manager for tracking LM usage.
 
-    Each LM call is recorded by the innermost active tracker. On exit, a nested tracker
-    rolls its usage up into the enclosing one, so an outer block always reflects
-    everything that happened inside it (including work done by nested scopes).
+    When nested, the child will roll-up recorded usage into the parent upon exit.
+    Note that usage added after the scope exit will not be recorded in the parent.
     """
     tracker = UsageTracker()
-    parent_tracker = settings.usage_tracker
 
-    try:
-        with settings.context(usage_tracker=tracker):
+    parent = settings.usage_tracker
+    with settings.context(usage_tracker=tracker):
+        try:
             yield tracker
-    finally:
-        # Roll up even when the block raises: those tokens were still spent.
-        if parent_tracker is not None:
-            parent_tracker.merge(tracker)
+        finally:
+            if parent is not None:
+                for lm, entries in tracker.usage_data.items():
+                    parent.usage_data[lm].extend(entries)

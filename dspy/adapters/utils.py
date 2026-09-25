@@ -198,21 +198,9 @@ def _strip_markdown_code_fence(text):
     return match.group("body") if match else None
 
 
-def parse_value(value, annotation, field_info=None):
-    # Field constraints (max_length, ge, le, ...) live in FieldInfo.metadata, not in the bare
-    # annotation, so a TypeAdapter built from the annotation alone silently ignores them. Re-attach
-    # them via Annotated before validating so the constraints are actually enforced (#7925).
-    constraints = list(field_info.metadata) if field_info is not None else []
-
-    def _validate(candidate):
-        target = Annotated[(annotation, *constraints)] if constraints else annotation
-        return TypeAdapter(target).validate_python(candidate)
-
+def parse_value(value, annotation):
     if annotation is str:
-        result = str(value)
-        # Enforce str constraints (e.g. max_length) while keeping the literal-string coercion that
-        # avoids ast.literal_eval turning "1234" into an int.
-        return _validate(result) if constraints else result
+        return str(value)
 
     if isinstance(annotation, enum.EnumMeta):
         return find_enum_member(annotation, value)
@@ -261,11 +249,11 @@ def parse_value(value, annotation, field_info=None):
         raise ValueError(f"{value!r} is not one of {allowed!r}")
 
     if not isinstance(value, str):
-        return _validate(value)
+        return TypeAdapter(annotation).validate_python(value)
 
     if origin in (Union, types.UnionType) and type(None) in get_args(annotation) and str in get_args(annotation):
         # Handle union annotations, e.g., `str | None`, `Optional[str]`, `Union[str, int, None]`, etc.
-        return _validate(value)
+        return TypeAdapter(annotation).validate_python(value)
 
     # ChatAdapter instructs the LM to emit Python-literal syntax (e.g. a
     # dict[str, Any] with None/True/False), so try ast.literal_eval first: it
@@ -294,13 +282,13 @@ def parse_value(value, annotation, field_info=None):
                 candidate = value
 
     try:
-        return _validate(candidate)
+        return TypeAdapter(annotation).validate_python(candidate)
     except pydantic.ValidationError as e:
         if _annotation_is_subclass(annotation, DspyType):
             try:
                 # For dspy.Type, try parsing from the original value in case it has a custom parser
-                return _validate(value)
-            except Exception:
+                return TypeAdapter(annotation).validate_python(value)
+            except pydantic.ValidationError:
                 raise e
         raise
 
@@ -336,7 +324,7 @@ def get_field_description_string(fields: dict) -> str:
         field_message += f" ({get_annotation_name(v.annotation)})"
         desc = v.json_schema_extra["desc"] if v.json_schema_extra["desc"] != f"${{{k}}}" else ""
 
-        custom_types = DspyType.extract_custom_type_from_annotation(v.annotation)
+        custom_types = DspyType.extract_custom_type_from_annotation(v.rebuild_annotation())
         for custom_type in custom_types:
             if len(custom_type.description()) > 0:
                 desc += f"\n    Type description of {get_annotation_name(custom_type)}: {custom_type.description()}"

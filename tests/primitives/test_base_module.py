@@ -575,6 +575,18 @@ def test_parallel_inside_module_preserves_per_item_usage():
     results = Outer()(questions=["q1", "q2"])
     for result in results:
         assert result.get_lm_usage()
+def test_forward_guard_does_not_walk_the_stack(monkeypatch):
+    import inspect
+
+    class TestModule(dspy.Module):
+        def forward(self, x):
+            return x
+
+    def fail(*args, **kwargs):
+        raise AssertionError("inspect.stack() must not run on module call")
+
+    monkeypatch.setattr(inspect, "stack", fail)
+    assert TestModule()(x="test") == "test"
 
 
 def test_modules_to_serialize_registration_does_not_outlive_the_save(tmp_path):

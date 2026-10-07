@@ -353,6 +353,40 @@ async def test_streaming_handles_space_correctly():
     assert "".join([chunk.chunk for chunk in all_chunks]) == "How are you doing?"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["[[ ## answer ## ]]\n", "How ", "are ", "you ", "doing?\n\n", "[[ ## completed ## ]]"],
+        ["[[ ## answer ## ]]", "\nHow ", "are ", "you ", "doing?", "\n\n", "[[ ## completed ## ]]"],
+        ["[[ ## answer", " ## ]]", "\nHow ", "are ", "you ", "doing?", "\n\n[[ ## completed ## ]]"],
+        ["[[ ## answer ## ]]\n", "How\n", "are you\n", "doing?", "\n\n[[ ## completed ## ]]"],
+        ["[[ ## answer ## ]]\n", "How ", "are ", "you ", "doing?\n\n"],
+    ],
+)
+async def test_streaming_strips_boundary_whitespace_regardless_of_chunking(parts):
+    program = dspy.streamify(
+        dspy.Predict("question->answer"),
+        stream_listeners=[dspy.streaming.StreamListener(signature_field_name="answer")],
+    )
+
+    async def stream(*args, **kwargs):
+        for part in parts:
+            yield ModelResponseStream(model="gpt-4o-mini", choices=[StreamingChoices(delta=Delta(content=part))])
+
+    with mock.patch("litellm.acompletion", side_effect=stream):
+        with dspy.context(lm=dspy.LM("openai/gpt-4o-mini", engine="litellm", cache=False), adapter=dspy.ChatAdapter()):
+            all_chunks = []
+            final = None
+            async for value in program(question="What is the capital of France?"):
+                if isinstance(value, dspy.streaming.StreamResponse):
+                    all_chunks.append(value)
+                elif isinstance(value, dspy.Prediction):
+                    final = value
+
+    assert "".join([chunk.chunk for chunk in all_chunks]) == final.answer
+
+
 @pytest.mark.llm_call
 def test_sync_streaming(lm_for_test):
     class MyProgram(dspy.Module):
@@ -2304,3 +2338,16 @@ def test_streamify_keeps_a_group_of_several_failures():
     assert _single_failure(group_class("two", [ValueError("a"), ValueError("b")])) is None
     assert isinstance(_single_failure(group_class("outer", [group_class("inner", [KeyError("k")])])), KeyError)
     assert _single_failure(ValueError("plain")) is None
+
+
+def test_reset_clears_boundary_whitespace_state():
+    # The fork resets a reused listener through reset() (#8425); the boundary-whitespace state
+    # upstream added in #10553 is per stream too, so a reused listener must not carry it over.
+    listener = dspy.streaming.StreamListener(signature_field_name="answer")
+    listener.value_started = True
+    listener.held_whitespace = "\n\n"
+
+    listener.reset()
+
+    assert listener.value_started is False
+    assert listener.held_whitespace == ""

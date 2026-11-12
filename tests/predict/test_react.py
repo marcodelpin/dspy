@@ -803,3 +803,33 @@ def test_tool_observation_preserves_custom_type():
     ]
     assert len(images) == 2
     assert result.answer == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("ending", ["max_iters", "empty_tool_calls"])
+async def test_react_no_output_signature_returns_without_forced_submit(use_async, ending):
+    # Fork carry of 39e4a39c4 (#8484): a no-output signature (`a, b ->`) is pure tool
+    # orchestration, so once the loop ends there is nothing to submit and no extra LM call.
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    responses = [
+        {
+            "next_thought": "Add them.",
+            "tool_calls": dspy.ToolCalls.from_dict_list([{"name": "add", "args": {"a": 1, "b": 2}}]),
+        }
+    ]
+    if ending == "empty_tool_calls":
+        responses.append({"next_thought": "Done.", "tool_calls": dspy.ToolCalls(tool_calls=[])})
+    lm = dspy.utils.DummyLM(responses)
+    react = dspy.ReAct("a, b ->", tools=[add], max_iters=1 if ending == "max_iters" else 5)
+    assert not react.signature.output_fields
+
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        pred = await react.acall(a=1, b=2) if use_async else react(a=1, b=2)
+
+    assert len(lm.history) == len(responses)
+    assert pred.termination_reason == ending
+    results = pred.history.messages[0]["tool_calls"].tool_call_results.tool_call_results
+    assert results[0].value == 3

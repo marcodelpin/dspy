@@ -30,6 +30,10 @@ _RESERVED_INPUT_KEYS = frozenset({"history", "tools", "turn_budget"})
 _TURN_BUDGET_FIELD = "turn_budget"
 _FINAL_TURN_BUDGET = "No turns remain. Call `submit` now with your final outputs."
 
+# Loop endings after which a no-output signature returns directly, with the ending as its
+# `termination_reason`, instead of making the forced `submit` call (fork carry of #8484).
+_ORCHESTRATION_ENDINGS = frozenset({"max_iters", "empty_tool_calls"})
+
 if TYPE_CHECKING:
     from dspy.signatures.signature import Signature
 
@@ -175,6 +179,8 @@ class ReAct(Module):
             if final_outputs is not None:
                 return Prediction(**final_outputs, history=history, termination_reason="submit")
 
+        if self._orchestration_only(break_reason):
+            return Prediction(history=history, termination_reason=break_reason)
         return self._forced_submit(history, pending_inputs, break_reason, max_iters)
 
     async def aforward(self, **input_args):
@@ -216,7 +222,19 @@ class ReAct(Module):
             if final_outputs is not None:
                 return Prediction(**final_outputs, history=history, termination_reason="submit")
 
+        if self._orchestration_only(break_reason):
+            return Prediction(history=history, termination_reason=break_reason)
         return await self._aforced_submit(history, pending_inputs, break_reason, max_iters)
+
+    def _orchestration_only(self, break_reason: str) -> bool:
+        """Whether a loop that ended without `submit` can return without the forced final call.
+
+        A signature with no output fields (e.g. ``"context ->"``) is used purely for tool
+        orchestration: `submit` would carry nothing, so after a normal ending (turn budget spent
+        or no further calls) the extra LM call only adds cost and a way to fail. Parse failures
+        and context overflow still go through the forced submit.
+        """
+        return not self.signature.output_fields and break_reason in _ORCHESTRATION_ENDINGS
 
     def _turn_budget_inputs(self, turn_index: int | None, max_iters: int | None) -> dict[str, str]:
         """Build the per-call turn budget input; ``turn_index=None`` marks the forced final submit."""

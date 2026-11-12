@@ -110,6 +110,8 @@ After executing the calls in a turn, ReAct attaches their results to `ToolCalls`
 
 If the loop reaches `max_iters`, returns no calls, fails to parse, or exceeds the context window, ReAct makes one final LM call requesting `submit`. With native function calling enabled, it sets `tool_choice` to `submit`, so the provider enforces that choice. In non-native mode, the adapter removes `tool_choice` and requests `submit` through the formatted prompt instead. A successful fallback returns `termination_reason="forced_submit"`. If forced submission fails, ReAct raises rather than returning an incomplete prediction without the declared output fields.
 
+A signature with no output fields (for example `"context ->"`) is pure tool orchestration: when its loop reaches `max_iters` or returns no calls, ReAct returns the history without the forced `submit` call, and `termination_reason` is that ending (`"max_iters"` or `"empty_tool_calls"`). Parse failures and context overflow still make the forced call.
+
 ReAct does not automatically truncate old history events on context overflow.
 
 ### Async execution

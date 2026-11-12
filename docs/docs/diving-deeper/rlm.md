@@ -16,7 +16,9 @@ A normal `Predict` call puts the whole context into the prompt, so every token c
 
 ### 3. The LLM drives an iterative REPL loop
 
-`dspy.RLM` is not a single call. `forward()` runs up to `max_iters` turns. On each turn the internal `generate_action` predictor sees the variable metadata and the prior REPL history, then emits reasoning plus one Python code block. The code runs, its output joins the `REPLHistory`, and the next turn begins. State persists across turns because the whole run shares one interpreter session. This is why the instructions push the model to explore first and take small steps: each turn is meant to build on what the last one printed.
+`dspy.RLM` is not a single call. `forward()` runs up to `max_iters` turns. On each turn the internal `generate_action` predictor sees the variable metadata and the prior REPL history, then emits one Python code block. It uses native reasoning on supported LMs, or requests a short `plan` before the code otherwise. That plan is returned under the existing `reasoning` key. The code runs, its output joins the `REPLHistory`, and the next turn begins. State persists across turns because the whole run shares one interpreter session. This is why the instructions push the model to explore first and take small steps: each turn is meant to build on what the last one printed.
+
+Reasoning uses the same defaults as `ChainOfThought` and respects the LM's `reasoning_effort`. No separate reasoning-cache configuration is needed. REPL history carries text, code, and execution results; it does not replay provider-native reasoning state across iterations.
 
 ### 4. Built-in `llm_query` tools give the loop its recursion
 
@@ -36,7 +38,7 @@ The default `PythonInterpreter` executes Python in a Deno and Pyodide WASM sandb
 
 ### 8. `SandboxSerializable` loads large inputs into the sandbox once
 
-Some inputs are not plain strings. A DataFrame, a parsed corpus, or a binary blob would be wasteful and lossy to re-marshal into code on every turn. `SandboxSerializable` lets an input define how it crosses into the sandbox through four hooks: `sandbox_setup()` for imports, `to_sandbox()` for the payload, `sandbox_assignment()` for the reconstruction, and `rlm_preview()` for the metadata the model sees. `dspy.RLM` runs this once at the start of `forward()`, so the value is rebuilt under its original name and stays live across turns. The model works with a real pandas DataFrame rather than a stringified copy.
+Some inputs are not plain strings. A DataFrame, a parsed corpus, or a binary blob would be wasteful and lossy to re-marshal into code on every turn. `SandboxSerializable` lets an input define how it crosses into the sandbox through four hooks: `sandbox_setup()` for imports, `to_sandbox()` for the payload, `sandbox_assignment()` for the reconstruction, and `rlm_preview()` for the metadata the model sees. `dspy.RLM` runs this once at the start of `forward()`, so the value is rebuilt under its original name and stays live across turns. It crosses on the same path as dspy types, so the same value also works as a `dspy.Flex` input or a tool's result. The model works with a real pandas DataFrame rather than a stringified copy.
 
 ### 9. An extract pass salvages outputs when the loop ends early
 
@@ -45,10 +47,6 @@ A model can exhaust `max_iters` without ever submitting final outputs. Rather th
 ### 10. RLM optimizes like any other module
 
 The action and extract steps are ordinary `dspy.Predict` instances; `dspy.RLM` exposes them through `named_predictors` and compiles like any module. The task instructions, output-field descriptions, and tool docs are formatted into the action prompt when you construct the module, which is the surface an optimizer tunes. Running GEPA or MIPROv2 against a metric improves the loop’s behavior, not just the task instructions.
-
-### 11. RLM is marked experimental and the interface is in flux
-
-The class carries the `@experimental` decorator. The hard parts are still settling: call budgeting, sandbox lifetime, error recovery, and the action prompt itself. Treat the API as subject to change between releases and pin a version if you depend on it.
 
 ## API walkthrough
 
@@ -65,7 +63,7 @@ The public call validates the inputs against the signature, builds the variable 
 The model writes these into its code blocks. You don’t call them, but knowing them tells you what the model can do.
 
 **`llm_query(prompt)`**
-One sub-LLM call. It sends the prompt to `sub_lm` or the configured LM, increments the counter, and returns the response text. It raises if the prompt is empty or the budget is spent.
+One sub-LLM call. It sends the prompt to `sub_lm` or the configured LM, increments the counter, and returns the response text. The prompt may also be a list of strings and DSPy values such as images, sent as one multimodal message. It raises if the prompt is empty or the budget is spent.
 
 **`llm_query_batched(prompts)`**
 Concurrent sub-LLM calls over a list, run on an eight-worker thread pool and returned in input order. A failed call comes back as an `[ERROR] ...` string in its slot rather than aborting the batch. This beats a Python loop of `llm_query` when the model has many independent snippets to read.
@@ -93,7 +91,7 @@ A list of plain functions or `dspy.Tool` objects. RLM normalizes each to a `Tool
 A zero-argument callable that returns a fresh `CodeInterpreter` for one invocation. RLM may call the factory concurrently, and it always shuts down the returned interpreter. A class such as `PythonInterpreter` or `LocalInterpreter` is already a factory; use `functools.partial` or a callable provider object when construction needs configuration. RLM adds invocation-scoped tools to the returned interpreter's mutable `tools` dictionary, so remote sandboxes need a `CodeInterpreter` adapter that supports that protocol. `dspy.configure(interpreter_factory=...)` replaces the default on each `forward()`, so `dspy.context(interpreter_factory=...)` scopes the choice. If the active factory exposes an `execution_instructions` string, RLM refreshes it for each action call so the prompt matches the runtime executing the generated code.
 
 **`__call__(**inputs, interpreter_factory=...)` / `acall(**inputs, interpreter_factory=...)`**
-A per-invocation factory override, supplied by keyword. For example, `rlm(query=query, interpreter_factory=dspy.PythonInterpreter)` explicitly chooses PythonInterpreter even when another factory is configured. The factory must return a fresh interpreter; RLM injects tools and output metadata and always shuts it down. Its `execution_instructions` metadata controls the runtime guidance for that invocation without changing the shared predictor. Sub-agents built in the sandbox run their own code on this factory too. Live interpreter instances are no longer accepted at call time. The factory option is keyword-only, and `interpreter_factory` is reserved for runtime configuration rather than signature inputs.
+A per-invocation factory override, supplied by keyword. For example, `rlm(query=query, interpreter_factory=dspy.PythonInterpreter)` explicitly chooses PythonInterpreter even when another factory is configured. The factory must return a fresh interpreter; RLM injects tools and output metadata and always shuts it down. Its `execution_instructions` metadata controls the runtime guidance for that invocation without changing the shared predictor. Code-executing sub-agents that REPL code builds get fresh interpreters from this factory too. Live interpreter instances are no longer accepted at call time. The factory option is keyword-only, and `interpreter_factory` is reserved for runtime configuration rather than signature inputs.
 
 **`dspy.SandboxSerializable`**
 The base class for inputs that need custom loading. Implement `sandbox_setup`, `to_sandbox`, `sandbox_assignment`, and `rlm_preview`. It also defines a Pydantic schema hook, so a subclass can be a typed field in a signature, as in `data: DataFrame = dspy.InputField()`.
@@ -101,7 +99,7 @@ The base class for inputs that need custom loading. Implement `sandbox_setup`, `
 ### Inspecting the trajectory
 
 **`Prediction` fields: your output fields, `trajectory`, `final_reasoning`**
-`forward()` returns a `Prediction` carrying the signature’s output fields plus two debugging fields. `trajectory` is a list of `{reasoning, code, output}` dicts, one per turn. `final_reasoning` is the model’s reasoning on the closing step. Read `trajectory` to see exactly what code ran and why.
+`forward()` returns a `Prediction` carrying the signature’s output fields plus two debugging fields. `trajectory` is a list of `{reasoning, code, output}` dicts, one per turn. `reasoning` and `final_reasoning` remain strings: they contain the returned native summary or fallback plan, or an empty string when no summary is available. Read `trajectory` to see what code ran and what it returned; a reasoning explanation is not guaranteed.
 
 **`RLM.tools`**
 A property returning the user-provided tools as a name-to-`Tool` dict, excluding the built-in `llm_query` and `llm_query_batched`. Use it to confirm what the model can call.

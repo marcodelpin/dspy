@@ -178,7 +178,7 @@ class MIPROv2(Teleprompter):
             )
 
         # Set random seeds
-        seed = seed or self.seed
+        seed = seed if seed is not None else self.seed
         self._set_random_seeds(seed)
 
 

@@ -2,13 +2,14 @@ import base64
 import io
 import mimetypes
 import os
-import warnings
 from typing import Any, Union
 
 import pydantic
 
+from dspy._vendor.lm15.types import audio
 from dspy.adapters.types._http_download import download_bytes
 from dspy.adapters.types.base_type import Type
+from dspy.lm15 import AudioPart
 
 try:
     import soundfile as sf
@@ -61,12 +62,13 @@ class Audio(Type):
             data = normalized
         super().__init__(**data)
 
-    def format(self) -> list[dict[str, Any]]:
+    def format(self) -> list[AudioPart]:
         try:
             data = self.data
         except Exception as e:
             raise ValueError(f"Failed to format audio for DSPy: {e}")
-        return [{"type": "input_audio", "input_audio": {"data": data, "format": self.audio_format}}]
+        media_type = {"mp3": "audio/mpeg", "mpeg": "audio/mpeg"}.get(self.audio_format, f"audio/{self.audio_format}")
+        return [audio(data=data, media_type=media_type)]
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -128,16 +130,6 @@ class Audio(Type):
 
         encoded_data = base64.b64encode(file_data).decode("utf-8")
         return cls(data=encoded_data, audio_format=audio_format)
-
-    @classmethod
-    def from_file(cls, file_path: str) -> "Audio":
-        """Deprecated alias for :meth:`from_path`."""
-        warnings.warn(
-            "Audio.from_file is deprecated and will be removed in 3.4; use Audio.from_path instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return cls.from_path(file_path)
 
     @classmethod
     def from_array(cls, array: Any, sampling_rate: int, format: str = "wav") -> "Audio":

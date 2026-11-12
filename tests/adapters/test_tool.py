@@ -1105,7 +1105,7 @@ def test_tool_call_execute_with_local_functions():
     main()
 
 
-def test_as_function_tool_excludes_defaulted_args_from_required():
+def test_as_function_tool_required_omits_defaulted_args_fork_9882():
     """#9882: the native function declaration listed EVERY arg in 'required', ignoring Python
     defaults. An argument with a default value is optional and must be excluded from 'required'."""
 
